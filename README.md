@@ -2,7 +2,7 @@
 
 把 [HD Sentinel Linux 控制台版](https://www.hdsentinel.com/hard_disk_sentinel_linux.php)
 的各 CPU 架构二进制封装为 `.deb` / `.rpm`，并集成邮件发送警告功能。
-打包在 **GitHub Actions** 中完成（本机若为 Windows 无法直接 `rpmbuild`/`dpkg-buildpackage`）。
+打包在 **GitHub Actions** 中完成。
 
 ## 架构矩阵
 
@@ -62,7 +62,7 @@ highest_temp_max = 65
 cooldown_minutes = 60
 ```
 
-## 本地构建（WSL / Linux）
+## 本地构建（Linux）
 
 ```bash
 sudo apt-get install -y ruby ruby-dev build-essential rpm unzip gzip
