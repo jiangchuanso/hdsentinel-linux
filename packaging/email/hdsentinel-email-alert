@@ -1,0 +1,256 @@
+#!/usr/bin/env python3
+"""
+hdsentinel-email-alert — HD Sentinel 指标阈值邮件告警
+
+运行 Hard Disk Sentinel，按磁盘解析健康度/性能/温度等指标，任一指标超出阈值时
+通过 SMTP 发送邮件告警。支持对持续相同告警做冷却，避免邮件轰炸。
+
+配置文件: /etc/hdsentinel/email.conf  (INI 格式, 见 email.conf.example)
+也可用环境变量 HDSENTINEL_EMAIL_CONF 指定其它路径。
+"""
+import configparser
+import hashlib
+import json
+import os
+import re
+import smtplib
+import ssl
+import subprocess
+import sys
+from datetime import datetime, timezone
+
+DEFAULT_CONF = "/etc/hdsentinel/email.conf"
+HDSENTINEL = "/opt/hdsentinel/hdsentinel"
+DEFAULT_STATE_FILE = "/var/lib/hdsentinel/email-alert-state.json"
+
+
+def load_config(path):
+    cp = configparser.ConfigParser()
+    cp["smtp"] = {
+        "host": "localhost",
+        "port": "25",
+        "user": "",
+        "password": "",
+        "use_tls": "false",
+        "use_ssl": "false",
+        "from": "hdsentinel@localhost",
+        "to": "root@localhost",
+        "subject_prefix": "[HD Sentinel Alert]",
+    }
+    cp["alert"] = {
+        "mode": "alert",              # alert = 超阈值才发; daily = 每次运行都发完整报告
+        "health_min": "60",           # 健康度低于此值(%)告警
+        "performance_min": "60",      # 性能低于此值(%)告警
+        "temp_max": "55",             # 当前温度高于此值(℃)告警
+        "highest_temp_max": "65",     # 历史最高温度高于此值(℃)告警
+        "cooldown_minutes": "60",     # 同一告警重复发送的最小间隔(0=不冷却)
+        "state_file": DEFAULT_STATE_FILE,
+    }
+    cp["hdsentinel"] = {
+        "path": HDSENTINEL,
+        # 留空输出完整报告(推荐); -solid 输出单行摘要(解析字段会受限)
+        "extra_args": "",
+    }
+    if os.path.exists(path):
+        cp.read(path)
+    return cp
+
+
+def get_report(hds_path, extra_args):
+    cmd = [hds_path] + (extra_args.split() if extra_args else [])
+    try:
+        res = subprocess.run(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            timeout=120, text=True,
+        )
+        return res.stdout or ""
+    except Exception as exc:  # noqa: BLE001
+        return "ERROR: 无法运行 hdsentinel (%s): %s" % (hds_path, exc)
+
+
+def parse_disks(report):
+    """把 hdsentinel 完整报告按空行拆成块，每块解析为一个磁盘的指标字典。"""
+    disks = []
+    # 按一个或多个空行拆分
+    blocks = re.split(r"\n\s*\n", report.strip())
+    for block in blocks:
+        lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
+        if not any("HDD Device" in ln for ln in lines):
+            continue
+
+        def get(pattern, default=None, group=1):
+            for ln in lines:
+                m = re.search(pattern, ln)
+                if m:
+                    return m.group(group)
+            return default
+
+        def int_get(pattern, default=None):
+            v = get(pattern)
+            try:
+                return int(v) if v is not None else default
+            except (ValueError, TypeError):
+                return default
+
+        device = get(r"HDD Device\s*(?:\d+)?\s*:\s*(.+)", "", group=2)
+        model = get(r"HDD Model ID\s*:\s*(.+)", "")
+        disks.append({
+            "device": device,
+            "model": model,
+            "temperature": int_get(r"Temperature\s*:\s*(\d+)"),
+            "highest_temp": int_get(r"Highest Temp\.\s*:\s*(\d+)"),
+            "health": int_get(r"Health\s*:\s*(\d+)"),
+            "performance": int_get(r"Performance\s*:\s*(\d+)"),
+            "raw": block,
+        })
+    return disks
+
+
+def evaluate(disks, cfg):
+    """返回 [(disk_idx, disk, metric, value, threshold), ...] 告警列表。"""
+    violations = []
+    health_min = cfg["alert"].getint("health_min")
+    perf_min = cfg["alert"].getint("performance_min")
+    temp_max = cfg["alert"].getint("temp_max")
+    hi_max = cfg["alert"].getint("highest_temp_max")
+
+    for idx, d in enumerate(disks):
+        if d["health"] is not None and d["health"] < health_min:
+            violations.append((idx, d, "健康度", "%d%%" % d["health"], "< %d%%" % health_min))
+        if d["performance"] is not None and d["performance"] < perf_min:
+            violations.append((idx, d, "性能", "%d%%" % d["performance"], "< %d%%" % perf_min))
+        if d["temperature"] is not None and d["temperature"] > temp_max:
+            violations.append((idx, d, "温度", "%d℃" % d["temperature"], "> %d℃" % temp_max))
+        if d["highest_temp"] is not None and d["highest_temp"] > hi_max:
+            violations.append((idx, d, "历史最高温度", "%d℃" % d["highest_temp"], "> %d℃" % hi_max))
+    return violations
+
+
+def build_summary(disks, violations):
+    lines = ["检测到 %d 个磁盘，其中 %d 项指标异常：\n" % (len(disks), len(violations))]
+    for idx, d, metric, value, threshold in violations:
+        lines.append(
+            "  • %s (%s): %s 当前 %s，阈值 %s" % (
+                d["device"], d["model"] or "未知型号", metric, value, threshold
+            )
+        )
+    lines.append("\n完整报告：\n")
+    return "\n".join(lines)
+
+
+def load_state(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def save_state(path, state):
+    os.makedirs(os.path.dirname(path) or "/var/lib/hdsentinel", mode=0o755, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(state, f)
+
+
+def is_cooldown(violations, cfg):
+    """若当前告警与上次相同且在冷却期内，返回 True。"""
+    cooldown = cfg["alert"].getint("cooldown_minutes")
+    if cooldown <= 0 or not violations:
+        return False
+    state_file = cfg["alert"]["state_file"]
+    state = load_state(state_file)
+
+    sig_parts = ["%s|%s|%s|%s" % (d["device"], d["model"], m, v) for _, d, m, v, _ in violations]
+    sig = hashlib.sha256("\n".join(sorted(sig_parts)).encode("utf-8")).hexdigest()[:16]
+
+    now = datetime.now(timezone.utc)
+    if state.get("last_signature") == sig:
+        try:
+            last = datetime.fromisoformat(state["last_alert_time"])
+            if not last.tzinfo:
+                last = last.replace(tzinfo=timezone.utc)
+            elapsed = (now - last).total_seconds() / 60.0
+            if elapsed < cooldown:
+                print("同一告警冷却中 (%.0f/%.0f min)，跳过发送" % (elapsed, cooldown))
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+
+    state["last_signature"] = sig
+    state["last_alert_time"] = now.isoformat()
+    save_state(state_file, state)
+    return False
+
+
+def send_email(cfg, subject, body):
+    s = cfg["smtp"]
+    to_addrs = [a.strip() for a in s["to"].split(",") if a.strip()]
+    if not to_addrs:
+        print("未配置收件人 (smtp.to)", file=sys.stderr)
+        return False
+
+    msg = [
+        "From: %s" % s["from"],
+        "To: %s" % ", ".join(to_addrs),
+        "Subject: %s" % subject,
+        "Date: %s" % datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S +0000"),
+        "",
+        body,
+    ]
+    data = "\n".join(msg)
+    host, port = s["host"], int(s["port"])
+
+    def auth(srv):
+        if s["user"]:
+            srv.login(s["user"], s["password"])
+
+    try:
+        if s.getboolean("use_ssl"):
+            with smtplib.SMTP_SSL(host, port, context=ssl.create_default_context()) as srv:
+                auth(srv)
+                srv.sendmail(s["from"], to_addrs, data)
+        else:
+            with smtplib.SMTP(host, port) as srv:
+                if s.getboolean("use_tls"):
+                    srv.starttls(context=ssl.create_default_context())
+                auth(srv)
+                srv.sendmail(s["from"], to_addrs, data)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        print("邮件发送失败: %s" % exc, file=sys.stderr)
+        return False
+
+
+def main():
+    cfg = load_config(os.environ.get("HDSENTINEL_EMAIL_CONF", DEFAULT_CONF))
+    path = cfg["hdsentinel"]["path"]
+    report = get_report(path, cfg["hdsentinel"].get("extra_args", ""))
+
+    disks = parse_disks(report)
+    if not disks:
+        print("未解析到任何磁盘信息。hdsentinel 输出如下：\n%s" % report, file=sys.stderr)
+        return 1
+
+    if cfg["alert"]["mode"] == "daily":
+        summary = "HD Sentinel 每日状态报告\n\n" + report
+        ok = send_email(cfg, "%s 每日状态报告" % cfg["smtp"]["subject_prefix"], summary)
+        print("每日报告已发送" if ok else "每日报告发送失败")
+        return 0
+
+    violations = evaluate(disks, cfg)
+    if not violations:
+        print("无告警：%d 个磁盘均正常" % len(disks))
+        return 0
+
+    if is_cooldown(violations, cfg):
+        return 0
+
+    subject = "%s %d 项磁盘指标异常" % (cfg["smtp"]["subject_prefix"], len(violations))
+    body = build_summary(disks, violations) + report
+    ok = send_email(cfg, subject, body)
+    print("告警已发送：%d 项指标异常" % len(violations) if ok else "告警发送失败")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

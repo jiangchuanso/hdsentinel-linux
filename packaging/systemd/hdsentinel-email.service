@@ -1,0 +1,6 @@
+[Unit]
+Description=Hard Disk Sentinel e-mail alert (oneshot)
+
+[Service]
+Type=oneshot
+ExecStart=/opt/hdsentinel/hdsentinel-email-alert

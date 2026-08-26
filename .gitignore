@@ -1,0 +1,12 @@
+# 提交/上传时忽略所有点文件与点目录
+# (保留 .github 工作流 与 .gitignore 本身; .codebuddy 等也一并忽略)
+.*
+!.github
+!.gitignore
+!binaries/.gitkeep
+
+# 构建时从官方源地址下载的二进制, 不纳入版本库(保留目录占位)
+binaries/*
+dist/
+*.deb
+*.rpm

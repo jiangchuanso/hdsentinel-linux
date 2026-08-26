@@ -1,0 +1,39 @@
+# HD Sentinel 指标阈值邮件告警配置示例
+# 复制为 /etc/hdsentinel/email.conf 后修改并 chmod 600
+
+[smtp]
+# SMTP 服务器
+host = smtp.example.com
+port = 465
+# 登录凭据(留空表示匿名/本机中继)
+user =
+password =
+# 加密方式: use_ssl=true 走 SMTPS(465); use_tls=true 走 STARTTLS(587)
+use_ssl = false
+use_tls = true
+# 收发件人
+from = hdsentinel@yourhost.local
+to = admin@example.com, oncall@example.com
+subject_prefix = [HD Sentinel Alert]
+
+[alert]
+# 模式: alert = 仅超阈值时发送邮件; daily = 每次运行都发送完整报告
+mode = alert
+# 任一磁盘健康度低于该值(%)触发告警
+health_min = 60
+# 任一磁盘性能低于该值(%)触发告警
+performance_min = 60
+# 任一磁盘当前温度高于该值(℃)触发告警
+temp_max = 55
+# 任一磁盘历史最高温度高于该值(℃)触发告警
+highest_temp_max = 65
+# 同一告警冷却时间(分钟), 0 表示不冷却; 避免指标持续异常时邮件轰炸
+cooldown_minutes = 60
+# 告警状态文件(记录上次告警签名和时间)
+state_file = /var/lib/hdsentinel/email-alert-state.json
+
+[hdsentinel]
+# hdsentinel 二进制路径
+path = /opt/hdsentinel/hdsentinel
+# 额外参数: 留空输出完整报告(推荐, 可解析各指标); -solid 输出单行摘要
+extra_args =

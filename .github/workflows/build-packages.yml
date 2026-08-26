@@ -1,0 +1,56 @@
+name: Build hdsentinel deb/rpm packages
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: i386,  deb: i386,   rpm: i386    }
+          - { arch: amd64, deb: amd64,  rpm: x86_64  }
+          - { arch: armhf, deb: armhf,  rpm: armv7hl }
+          - { arch: arm64, deb: arm64,  rpm: aarch64 }
+          - { arch: armel, deb: armel,  rpm: armv5tel }
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install packaging tools (ruby + fpm + rpm)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ruby ruby-dev build-essential rpm unzip gzip
+          sudo gem install fpm
+
+      - name: Download binaries (已提交则跳过)
+        run: ./scripts/download-binaries.sh
+
+      - name: Build ${{ matrix.arch }} packages
+        env:
+          PKG_VERSION: "0.20"
+        run: ./scripts/build-packages.sh ${{ matrix.arch }}
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: hdsentinel-${{ matrix.arch }}
+          path: dist/hdsentinel*${{ matrix.arch }}*
+          if-no-files-found: error
+
+      - name: Publish to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/hdsentinel*${{ matrix.arch }}*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
