@@ -1,0 +1,4 @@
+# /etc/cron.d/hdsentinel-email
+# 每 15 分钟以 root 身份运行 HD Sentinel 邮件告警(兼容无 systemd 的系统)。
+# 需先配置 /etc/hdsentinel/email.conf 才会真正发信。
+*/15 * * * * root /opt/hdsentinel/hdsentinel-email-alert

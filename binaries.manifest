@@ -1,0 +1,14 @@
+# Hard Disk Sentinel Linux 二进制清单 (TSV, 制表符分隔)
+# 字段: ARCH<TAB>SOURCE<TAB>URL<TAB>EXTRACT<TAB>DEBARCH<TAB>RPMARCH<TAB>ITER<TAB>DESC
+# EXTRACT: gz = gzip 压缩可执行; zip = zip 压缩可执行; raw = 未压缩可执行
+# ITER:   包迭代号(用于同一架构打出多个来源包, 例如两个 armhf 二进制)
+# 下载地址: 构建时从 URL 列抓取(官方 /hdslin/ 目录)
+# 注意: hdsentinel-020-arm.gz (ARMv6 Pi) 与 hdsentinel-armv7.gz (ARMv7) 都归 armhf,
+#       这里用不同 ITER 打成两个独立 armhf 包(文件名见 build-packages.sh)。
+ARCH	SOURCE	URL	EXTRACT	DEBARCH	RPMARCH	ITER	DESC
+i386	hdsentinel-019b.gz	https://www.hdsentinel.com/hdslin/hdsentinel-019b.gz	gz	i386	i386	1	32-bit x86
+amd64	hdsentinel-020c-x64.zip	https://www.hdsentinel.com/hdslin/hdsentinel-020c-x64.zip	zip	amd64	x86_64	1	64-bit x86
+armhf	hdsentinel-armv7.gz	https://www.hdsentinel.com/hdslin/hdsentinel-armv7.gz	gz	armhf	armv7hl	1	ARMv7 (RPi4/NAS)
+armhf	hdsentinel-020-arm.gz	https://www.hdsentinel.com/hdslin/hdsentinel-020-arm.gz	gz	armhf	armv6hl	2	ARMv6 (老版 Pi)
+arm64	hdsentinel-armv8.zip	https://www.hdsentinel.com/hdslin/hdsentinel-armv8.zip	zip	arm64	aarch64	1	ARMv8/ARM64
+armel	hdsentinelarm	https://www.hdsentinel.com/hdslin/armv5/hdsentinelarm	raw	armel	armv5tel	1	ARMv5 (NAS, 未压缩)

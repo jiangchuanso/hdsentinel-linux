@@ -1,0 +1,6 @@
+# 强制脚本/清单/工作流使用 LF 换行
+# 避免从 Windows 提交时带入 CRLF, 导致 CI 中 bash 解析异常(如 basename、字段带控制字符)
+* text=auto eol=lf
+*.sh text eol=lf
+*.manifest text eol=lf
+*.yml text eol=lf

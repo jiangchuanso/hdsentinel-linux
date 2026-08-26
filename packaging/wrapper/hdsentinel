@@ -1,0 +1,4 @@
+#!/bin/sh
+# /usr/bin/hdsentinel — 包装器, 转发参数给真正安装到
+# /opt/hdsentinel/hdsentinel 的二进制(需 root 权限访问磁盘设备)。
+exec /opt/hdsentinel/hdsentinel "$@"

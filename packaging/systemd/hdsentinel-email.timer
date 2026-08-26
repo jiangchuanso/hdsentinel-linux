@@ -1,0 +1,11 @@
+[Unit]
+Description=Hard Disk Sentinel e-mail alert timer
+
+[Timer]
+# 每 15 分钟检查一次磁盘指标; 启动后先等待 2 分钟再触发
+OnBootSec=2min
+OnUnitActiveSec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
