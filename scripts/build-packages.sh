@@ -82,14 +82,16 @@ build_one() {
     --vendor "H.D.S. Hungary" --license "Freeware (HD Sentinel © H.D.S. Hungary)"
     --url "https://www.hdsentinel.com"
     --category "utils" --provides hdsentinel --provides hdsentinel-email-alert
-    --depends python3 --rpm-os linux --recommends cron
+    --depends python3 --rpm-os linux
   )
 
   echo "    -> deb ($debarch, iter ${iter:-$PKG_ITER})"
-  fpm "${common[@]}" -t deb -a "$debarch" \
+  # --deb-recommends 是 deb 专属选项(旧版 fpm 无通用 --recommends); 无 systemd 时由 cron 兜底
+  fpm "${common[@]}" --deb-recommends cron -t deb -a "$debarch" \
       -p "$OUT_DIR/hdsentinel_${PKG_VER}-${iter:-$PKG_ITER}_${debarch}.deb" .
 
   echo "    -> rpm ($rpmarch, iter ${iter:-$PKG_ITER})"
+  # 不为 rpm 加 Recommends: 旧版 fpm 未必支持 --rpm-recommends, 且 RHEL 系默认已带 cronie
   fpm "${common[@]}" -t rpm -a "$rpmarch" \
       -p "$OUT_DIR/hdsentinel-${PKG_VER}-${iter:-$PKG_ITER}.${rpmarch}.rpm" .
 
