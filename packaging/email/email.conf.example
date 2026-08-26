@@ -9,8 +9,9 @@ port = 465
 user =
 password =
 # 加密方式: use_ssl=true 走 SMTPS(465); use_tls=true 走 STARTTLS(587)
-use_ssl = false
-use_tls = true
+# 注意: 两者只能一个为 true, 且要与 port 匹配(465=SMTPS, 587=STARTTLS)
+use_ssl = true
+use_tls = false
 # 收发件人
 from = hdsentinel@yourhost.local
 to = admin@example.com, oncall@example.com

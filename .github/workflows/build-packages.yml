@@ -16,11 +16,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { arch: i386,  deb: i386,   rpm: i386    }
-          - { arch: amd64, deb: amd64,  rpm: x86_64  }
-          - { arch: armhf, deb: armhf,  rpm: armv7hl }
-          - { arch: arm64, deb: arm64,  rpm: aarch64 }
-          - { arch: armel, deb: armel,  rpm: armv5tel }
+          - { arch: i386 }
+          - { arch: amd64 }
+          - { arch: armhf }
+          - { arch: arm64 }
+          - { arch: armel }
 
     steps:
       - name: Checkout
@@ -44,13 +44,15 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: hdsentinel-${{ matrix.arch }}
-          path: dist/hdsentinel*${{ matrix.arch }}*
+          # 注意: armhf 的 rpm 分 armv7hl/armv6hl, armel 的 rpm 是 armv5tel,
+          # 文件名不一定含 arch 字样, 故直接收集 dist/ 下全部 hdsentinel* 产物
+          path: dist/hdsentinel*
           if-no-files-found: error
 
       - name: Publish to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/hdsentinel*${{ matrix.arch }}*
+          files: dist/hdsentinel*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

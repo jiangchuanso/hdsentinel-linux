@@ -9,6 +9,8 @@ hdsentinel-email-alert — HD Sentinel 指标阈值邮件告警
 也可用环境变量 HDSENTINEL_EMAIL_CONF 指定其它路径。
 """
 import configparser
+import email.message
+import email.utils
 import hashlib
 import json
 import os
@@ -92,7 +94,7 @@ def parse_disks(report):
             except (ValueError, TypeError):
                 return default
 
-        device = get(r"HDD Device\s*(?:\d+)?\s*:\s*(.+)", "", group=2)
+        device = get(r"HDD Device\s*(?:\d+)?\s*:\s*(.+)", "")
         model = get(r"HDD Model ID\s*:\s*(.+)", "")
         disks.append({
             "device": device,
@@ -189,15 +191,15 @@ def send_email(cfg, subject, body):
         print("未配置收件人 (smtp.to)", file=sys.stderr)
         return False
 
-    msg = [
-        "From: %s" % s["from"],
-        "To: %s" % ", ".join(to_addrs),
-        "Subject: %s" % subject,
-        "Date: %s" % datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S +0000"),
-        "",
-        body,
-    ]
-    data = "\n".join(msg)
+    # 用 EmailMessage 构造: 主题/正文中的非 ASCII 字符(中文等)会被正确编码
+    # (Header 走 RFC 2047, 正文走 UTF-8), 避免 smtplib 手工拼串时报 ASCII 编码错误
+    # 或被服务器拒收。
+    msg = email.message.EmailMessage()
+    msg["From"] = s["from"]
+    msg["To"] = ", ".join(to_addrs)
+    msg["Subject"] = subject
+    msg["Date"] = email.utils.formatdate(localtime=False)
+    msg.set_content(body)
     host, port = s["host"], int(s["port"])
 
     def auth(srv):
@@ -208,13 +210,13 @@ def send_email(cfg, subject, body):
         if s.getboolean("use_ssl"):
             with smtplib.SMTP_SSL(host, port, context=ssl.create_default_context()) as srv:
                 auth(srv)
-                srv.sendmail(s["from"], to_addrs, data)
+                srv.send_message(msg)
         else:
             with smtplib.SMTP(host, port) as srv:
                 if s.getboolean("use_tls"):
                     srv.starttls(context=ssl.create_default_context())
                 auth(srv)
-                srv.sendmail(s["from"], to_addrs, data)
+                srv.send_message(msg)
         return True
     except Exception as exc:  # noqa: BLE001
         print("邮件发送失败: %s" % exc, file=sys.stderr)

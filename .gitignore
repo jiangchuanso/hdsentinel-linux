@@ -1,12 +1,14 @@
 # 提交/上传时忽略所有点文件与点目录
-# (保留 .github 工作流 与 .gitignore 本身; .codebuddy 等也一并忽略)
+# (保留 .github 工作流 与 .gitignore/.gitattributes 本身; .codebuddy 等也一并忽略)
 .*
 !.github
 !.gitignore
-!binaries/.gitkeep
+!.gitattributes
 
-# 构建时从官方源地址下载的二进制, 不纳入版本库(保留目录占位)
+# 构建时从官方源地址下载的二进制, 不纳入版本库(保留目录占位 .gitkeep)
+# 注意: 否定规则必须写在对应忽略规则之后才生效
 binaries/*
+!binaries/.gitkeep
 dist/
 *.deb
 *.rpm

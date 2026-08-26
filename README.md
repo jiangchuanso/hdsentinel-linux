@@ -46,6 +46,10 @@ packaging/cron/                    cron.d 兜底配置
 - 两种触发方式：
   - **systemd**（推荐）：`systemctl enable --now hdsentinel-email.timer`（每 15 分钟检查一次）
   - **cron**：`/etc/cron.d/hdsentinel-email` 已随包安装（每 15 分钟 root 运行）
+
+> 两种定时方式**只保留一种**：启用 systemd timer 后请删除/注释
+> `/etc/cron.d/hdsentinel-email`，否则会重复触发（alert 模式靠 cooldown 兜底，
+> daily 模式会重复发信）。
 - 模式：`alert`（仅超阈值发信）或 `daily`（每次运行都发完整报告），见配置 `alert.mode`。
 
 配置示例：
@@ -81,4 +85,11 @@ ls dist/
 3. **Actions → Run workflow** 手动触发；或对 `v*` tag 推送自动构建并发 Release。
 4. 产物：每个架构一个 `.deb` + 一个 `.rpm`，上传为 artifact；打 tag 时附到 Release。
 
-> 注意：HD Sentinel 为闭源 Freeware 二进制，提交到公开仓库前请确认许可允许再分发。
+## 许可 / License
+
+- **HD Sentinel 二进制及官方 `HDSentinel_EmailUtil` 脚本**：均为**闭源 Freeware**，
+  **版权归 H.D.S. Hungary（HD Sentinel）所有**。本仓库**不包含、也不重新分发**这些文件——
+  构建时仅从官方源地址 `https://www.hdsentinel.com/hdslin/` 临时下载并打进包中。
+  将构建产物（`.deb`/`.rpm`）发布到公开渠道前，请确认 HD Sentinel 的许可条款允许再分发其二进制。
+- **本仓库的打包脚本、systemd/cron 单元、邮件告警配置与文档**（不包含上述二进制）：
+  采用 MIT 许可，见 [LICENSE](LICENSE)。

@@ -31,9 +31,17 @@ build_one() {
       gunzip -c "$BIN_DIR/$src" > "$bin"
       ;;
     zip)
-      local tmp; tmp="$(mktemp -d)"
+      local tmp found
+      tmp="$(mktemp -d)"
       unzip -o "$BIN_DIR/$src" -d "$tmp" >/dev/null
-      cp "$tmp"/hdsentinel "$bin"
+      # zip 内可执行文件可能就叫 hdsentinel 或带前缀/后缀, 取第一个 hdsentinel* 常规文件
+      found="$(find "$tmp" -type f -name 'hdsentinel*' -print -quit)"
+      if [[ -z "$found" ]]; then
+        echo "错误: $src 解压后未找到 hdsentinel* 可执行文件"
+        rm -rf "$tmp"
+        exit 1
+      fi
+      cp "$found" "$bin"
       rm -rf "$tmp"
       ;;
     raw)
@@ -71,7 +79,7 @@ build_one() {
     -n hdsentinel -v "$PKG_VER" --iteration "${iter:-$PKG_ITER}"
     --description "Hard Disk Sentinel Linux console edition ($desc). Bundled with e-mail alert integration (SMTP)."
     --maintainer "HD Sentinel Packaging <packaging@local>"
-    --vendor "H.D.S. Hungary" --license "Freeware"
+    --vendor "H.D.S. Hungary" --license "Freeware (HD Sentinel © H.D.S. Hungary)"
     --url "https://www.hdsentinel.com"
     --category "utils" --provides hdsentinel --provides hdsentinel-email-alert
     --depends python3 --rpm-os linux --recommends cron
@@ -93,6 +101,8 @@ if [[ $# -gt 0 ]]; then
   for want in "$@"; do
     found=0
     while IFS=$'\t' read -r arch src url ext deb rpm iter desc; do
+      arch="${arch%$'\r'}"; src="${src%$'\r'}"; url="${url%$'\r'}"; ext="${ext%$'\r'}"
+      deb="${deb%$'\r'}"; rpm="${rpm%$'\r'}"; iter="${iter%$'\r'}"; desc="${desc%$'\r'}"
       [[ "$arch" == "ARCH" || -z "$arch" ]] && continue
       if [[ "$arch" == "$want" ]]; then
         build_one "$arch" "$src" "$ext" "$deb" "$rpm" "$iter" "$desc"; found=1
@@ -102,6 +112,8 @@ if [[ $# -gt 0 ]]; then
   done
 else
   while IFS=$'\t' read -r arch src url ext deb rpm iter desc; do
+    arch="${arch%$'\r'}"; src="${src%$'\r'}"; url="${url%$'\r'}"; ext="${ext%$'\r'}"
+    deb="${deb%$'\r'}"; rpm="${rpm%$'\r'}"; iter="${iter%$'\r'}"; desc="${desc%$'\r'}"
     [[ "$arch" == "ARCH" || -z "$arch" ]] && continue
     build_one "$arch" "$src" "$ext" "$deb" "$rpm" "$iter" "$desc"
   done < "$MANIFEST"
