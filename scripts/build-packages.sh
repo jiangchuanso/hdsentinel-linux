@@ -72,12 +72,6 @@ build_one() {
   # 5) cron.d(兼容无 systemd 的系统)
   cp "$ROOT/packaging/cron/hdsentinel-email" "$stage/etc/cron.d/hdsentinel-email"
 
-  # 6) 官方第三方邮件脚本(HDSentinel_EmailUtil)作为参考附带
-  if [[ -f "$BIN_DIR/hdsentinel_emailutil.zip" ]]; then
-    mkdir -p "$stage/opt/hdsentinel/emailutil"
-    cp "$BIN_DIR/hdsentinel_emailutil.zip" "$stage/opt/hdsentinel/emailutil/"
-  fi
-
   local common=(
     -s dir -C "$stage"
     -n hdsentinel -v "$PKG_VER" --iteration "${iter:-$PKG_ITER}"

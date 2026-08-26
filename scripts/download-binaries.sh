@@ -7,7 +7,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN_DIR="$ROOT/binaries"
 MANIFEST="$ROOT/binaries.manifest"
-EMAILUTIL_URL="https://www.hdsentinel.com/hdslin/hdsentinel_emailutil.zip"
 mkdir -p "$BIN_DIR"
 
 fetch() {
@@ -34,8 +33,5 @@ while IFS=$'\t' read -r arch src url ext deb rpm iter desc; do
   [[ "$arch" == "ARCH" || -z "$arch" || -z "$url" ]] && continue
   fetch "$url"
 done < "$MANIFEST"
-
-# 官方第三方邮件脚本(随包附带, 作参考)
-fetch "$EMAILUTIL_URL"
 
 echo "==> 完成, 文件位于 $BIN_DIR"

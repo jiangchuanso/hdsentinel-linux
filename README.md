@@ -62,8 +62,6 @@ highest_temp_max = 65
 cooldown_minutes = 60
 ```
 
-官方第三方脚本 `HDSentinel_EmailUtil.zip` 也随包附在 `/opt/hdsentinel/emailutil/` 供参考。
-
 ## 本地构建（WSL / Linux）
 
 ```bash
@@ -87,7 +85,7 @@ ls dist/
 
 ## 许可 / License
 
-- **HD Sentinel 二进制及官方 `HDSentinel_EmailUtil` 脚本**：均为**闭源 Freeware**，
+- **HD Sentinel 二进制**：**闭源 Freeware**，
   **版权归 H.D.S. Hungary（HD Sentinel）所有**。本仓库**不包含、也不重新分发**这些文件——
   构建时仅从官方源地址 `https://www.hdsentinel.com/hdslin/` 临时下载并打进包中。
   将构建产物（`.deb`/`.rpm`）发布到公开渠道前，请确认 HD Sentinel 的许可条款允许再分发其二进制。
