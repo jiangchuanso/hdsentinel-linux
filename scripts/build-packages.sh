@@ -34,10 +34,14 @@ build_one() {
       local tmp found
       tmp="$(mktemp -d)"
       unzip -o "$BIN_DIR/$src" -d "$tmp" >/dev/null
-      # zip 内可执行文件可能就叫 hdsentinel 或带前缀/后缀, 取第一个 hdsentinel* 常规文件
-      found="$(find "$tmp" -type f -name 'hdsentinel*' -print -quit)"
+      # zip 内可执行文件命名不固定(大小写/版本后缀差异), 先按 *entinel*(不区分大小写)匹配;
+      # 再兜底取体积最大的常规文件(二进制通常最大)
+      found="$(find "$tmp" -type f -iname '*entinel*' -print -quit)"
       if [[ -z "$found" ]]; then
-        echo "错误: $src 解压后未找到 hdsentinel* 可执行文件"
+        found="$(find "$tmp" -type f -printf '%s\t%p\n' | sort -n | tail -n1 | cut -f2-)"
+      fi
+      if [[ -z "$found" ]]; then
+        echo "错误: $src 解压后未找到任何文件"
         rm -rf "$tmp"
         exit 1
       fi

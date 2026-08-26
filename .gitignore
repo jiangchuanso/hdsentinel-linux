@@ -12,3 +12,6 @@ binaries/*
 dist/
 *.deb
 *.rpm
+
+# 手动解压产生的二进制目录(勿提交; 构建时从官方源地址下载, 不纳入仓库)
+hdsentinel-*/
