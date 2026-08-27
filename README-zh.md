@@ -54,15 +54,156 @@ packaging/cron/                    cron.d 兜底配置
 > daily 模式会重复发信）。
 - 模式：`alert`（仅超阈值发信）或 `daily`（每次运行都发完整报告），见配置 `alert.mode`。
 
-配置示例：
-```ini
-[alert]
-health_min = 60
-performance_min = 60
-temp_max = 55
-highest_temp_max = 65
-cooldown_minutes = 60
+### 快速上手
+
+```bash
+# 1. 安装 deb/rpm 包后，从模板创建配置
+sudo cp /etc/hdsentinel/email.conf.example /etc/hdsentinel/email.conf
+sudo chmod 600 /etc/hdsentinel/email.conf
+
+# 2. 编辑 SMTP 与阈值（参考下方说明）
+sudoeditor /etc/hdsentinel/email.conf
+
+# 3. 确保冷却状态目录存在
+sudo mkdir -p /var/lib/hdsentinel
+
+# 4. 手动试运行——会打印执行情况；若有指标超阈值（或 mode=daily）则真的发信
+sudo /opt/hdsentinel/hdsentinel-email-alert
+
+# 5. 启用定时任务（推荐 systemd）
+sudo systemctl enable --now hdsentinel-email.timer
 ```
+
+默认安装后，在 `email.conf` 配置好有效 SMTP 之前**不会**发任何邮件。
+手动运行会打印其中之一：`无告警 / 告警已发送 / 每日报告已发送 / 同一告警冷却中`。
+
+### 配置说明
+
+配置为纯 INI 格式，分三个段。仅支持整行 `#`/`;` 注释（值内的 `#` 不会被当作注释）。
+段名与键名不区分大小写。
+
+```ini
+[smtp]
+# SMTP 服务器。常见端口组合:
+#   25  = 明文 / STARTTLS(use_tls)
+#   465 = SMTPS(use_ssl)
+#   587 = STARTTLS(use_tls)
+host = localhost
+port = 25
+# 登录凭据; 留空表示匿名 / 本机中继
+user =
+password =
+# 加密方式: 二者互斥, 需与端口匹配。
+#   use_ssl=true  -> SMTPS(465, 全程加密)
+#   use_tls=true  -> 先用明文连 25/587 再 STARTTLS 升级
+#   二者都 false   -> 25 端口纯明文(本机中继/内网)
+use_ssl = false
+use_tls = false
+# 收发件人。`to` 支持逗号分隔多个地址
+from = hdsentinel@yourhost.local
+to = admin@example.com, oncall@example.com
+subject_prefix = [HD Sentinel Alert]
+
+[alert]
+# mode: alert = 仅超阈值发信; daily = 每次运行都发完整报告
+mode = alert
+# 各磁盘阈值:
+health_min = 60          # 任一磁盘健康度低于此值(%)告警
+performance_min = 60     # 任一磁盘性能低于此值(%)告警
+temp_max = 55            # 任一磁盘温度高于此值(℃)告警
+highest_temp_max = 65    # 任一磁盘历史最高温度高于此值(℃)告警
+# 同一告警冷却时间(分钟), 0 表示不冷却; 避免指标持续异常时邮件轰炸
+cooldown_minutes = 60
+# 记录上次告警签名与时间的状态文件(用于冷却)
+state_file = /var/lib/hdsentinel/email-alert-state.json
+
+[hdsentinel]
+# hdsentinel 二进制路径, 及额外参数。
+# extra_args 留空输出完整报告(推荐, 可解析各指标); 填 "-solid" 则输出单行摘要。
+path = /opt/hdsentinel/hdsentinel
+extra_args =
+```
+
+### SMTP 配置示例
+
+25 端口明文本机中继（如内网 Postfix，无认证）：
+
+```ini
+[smtp]
+host = localhost
+port = 25
+user =
+password =
+use_ssl = false
+use_tls = false
+```
+
+587 端口 STARTTLS（多数邮箱服务商）：
+
+```ini
+[smtp]
+host = smtp.example.com
+port = 587
+user = admin@example.com
+password = your-app-password
+use_ssl = false
+use_tls = true
+```
+
+465 端口隐式 SMTPS：
+
+```ini
+[smtp]
+host = smtp.example.com
+port = 465
+user = admin@example.com
+password = your-app-password
+use_ssl = true
+use_tls = false
+```
+
+### 定时触发
+
+**systemd（推荐）**
+
+```bash
+sudo systemctl enable --now hdsentinel-email.timer   # 每 15 分钟一次, 开机 2 分钟后首跑
+systemctl list-timers hdsentinel-email.timer         # 确认已启用
+journalctl -u hdsentinel-email.service              # 查看运行记录
+```
+
+timer 每 15 分钟触发一次，service 为 oneshot 执行该脚本。
+
+**cron（无 systemd 的系统）**
+
+`/etc/cron.d/hdsentinel-email` 随包安装，每 15 分钟以 root 运行：
+
+```cron
+*/15 * * * * root /opt/hdsentinel/hdsentinel-email-alert
+```
+
+> 两种定时方式**只保留一种**。启用 systemd timer 后请先注释/删除 cron 条目，
+> 否则 `daily` 模式会重复发信（alert 模式靠冷却兜底不会重复）。
+
+### 模式与冷却
+
+- **`alert`**（默认）：脚本逐盘比对健康度/性能/温度/历史最高温度与阈值，若有超阈值则发**一封**
+  邮件列出所有异常；全部正常则不发信。
+- **`daily`**：每次运行无论阈值如何都发送完整 `hdsentinel` 报告，适合做定期"心跳"汇报。
+- **冷却**：`alert` 模式下，脚本对异常集合（按 `device|model|metric|value` 排序后
+  sha256 取前 16 位十六进制）生成签名。同一签名在 `cooldown_minutes`（默认 60）分钟内被抑制；
+  不同的异常则立即发送。签名与时间戳保存在 `state_file`
+  （`/var/lib/hdsentinel/email-alert-state.json`）。
+
+### 常见问题排查
+
+- **`错误: 未安装 curl`** —— 安装 `curl`，脚本发信用它。
+- **没发信也没报错** —— 检查 `smtp.to` 是否配置，以及 `email.conf` 是否存在
+  （缺失时脚本会用默认值，可能指向 `root@localhost`）。
+- **邮件收不到** —— 用 `sudo` 手动运行脚本看 `curl` 退出码，并检查
+  `journalctl -u hdsentinel-email.service` 或 cron 邮件池。
+- **重复收到邮件** —— 两种定时方式同时启用（见上文）。
+- 主题中的非 ASCII 字符会自动按 RFC 2047 编码为 `=?UTF-8?B?…?=`；正文为 `UTF-8 / 8bit`。
 
 ## 本地构建（Linux）
 

@@ -60,15 +60,162 @@ The `hdsentinel` CLI itself has **no** mail option, so sending e-mail is impleme
 - Modes: `alert` (send only when a threshold is exceeded) or `daily` (send the full report on every
   run), see `alert.mode` in the config.
 
-Config example:
-```ini
-[alert]
-health_min = 60
-performance_min = 60
-temp_max = 55
-highest_temp_max = 65
-cooldown_minutes = 60
+### Quick start
+
+```bash
+# 1. Install the package (deb/rpm), then create the config from the template
+sudo cp /etc/hdsentinel/email.conf.example /etc/hdsentinel/email.conf
+sudo chmod 600 /etc/hdsentinel/email.conf
+
+# 2. Edit SMTP + thresholds (see reference below)
+sudoeditor /etc/hdsentinel/email.conf
+
+# 3. Make sure the state directory exists (for the cooldown signature)
+sudo mkdir -p /var/lib/hdsentinel
+
+# 4. Test a run manually — prints what it would do, and actually sends mail if a
+#    threshold is breached (or if mode=daily)
+sudo /opt/hdsentinel/hdsentinel-email-alert
+
+# 5. Enable the scheduler (systemd recommended)
+sudo systemctl enable --now hdsentinel-email.timer
 ```
+
+The default install does **not** send anything until `email.conf` exists with valid SMTP
+credentials. A manual run prints one of: `无告警 / 告警已发送 / 每日报告已发送 / 同一告警冷却中`.
+
+### Configuration reference
+
+The config is plain INI, grouped into three sections. Only full-line `#`/`;` comments are
+supported (inline `#` in a value is kept literally). Section/key names are case-insensitive.
+
+```ini
+[smtp]
+# SMTP server. Common port combos:
+#   25  = plaintext / STARTTLS (use_tls)
+#   465 = SMTPS (use_ssl)
+#   587 = STARTTLS (use_tls)
+host = localhost
+port = 25
+# Credentials; leave blank for anonymous / local relay
+user =
+password =
+# Encryption: these two are mutually exclusive and must match the port.
+#   use_ssl=true  -> SMTPS (465, encrypted end-to-end)
+#   use_tls=true  -> STARTTLS upgrade on 25/587
+#   both false    -> plaintext on 25 (local relay / LAN)
+use_ssl = false
+use_tls = false
+# Sender / recipients. `to` accepts a comma-separated list.
+from = hdsentinel@yourhost.local
+to = admin@example.com, oncall@example.com
+subject_prefix = [HD Sentinel Alert]
+
+[alert]
+# mode: alert = mail only when a threshold is breached;
+#       daily = mail the full report on every run.
+mode = alert
+# Per-disk thresholds:
+health_min = 60          # alert when any disk Health  < this (%)
+performance_min = 60     # alert when any disk Performance < this (%)
+temp_max = 55            # alert when any disk Temperature > this (℃)
+highest_temp_max = 65    # alert when any disk Highest Temp > this (℃)
+# Same-alert cooldown in minutes (0 = never cooldown); avoids mail storms
+cooldown_minutes = 60
+# State file storing the last alert signature + time (for cooldown)
+state_file = /var/lib/hdsentinel/email-alert-state.json
+
+[hdsentinel]
+# Path to the hdsentinel binary, and any extra args.
+# Leave extra_args empty for the full report (recommended, so all metrics parse).
+# Use "-solid" for a single-line summary instead.
+path = /opt/hdsentinel/hdsentinel
+extra_args =
+```
+
+### SMTP examples
+
+Plaintext local relay (e.g. a LAN Postfix, no auth):
+
+```ini
+[smtp]
+host = localhost
+port = 25
+user =
+password =
+use_ssl = false
+use_tls = false
+```
+
+STARTTLS on port 587 (e.g. a typical mailbox provider):
+
+```ini
+[smtp]
+host = smtp.example.com
+port = 587
+user = admin@example.com
+password = your-app-password
+use_ssl = false
+use_tls = true
+```
+
+Implicit SMTPS on port 465:
+
+```ini
+[smtp]
+host = smtp.example.com
+port = 465
+user = admin@example.com
+password = your-app-password
+use_ssl = true
+use_tls = false
+```
+
+### Scheduling
+
+**systemd (recommended)**
+
+```bash
+sudo systemctl enable --now hdsentinel-email.timer   # every 15 min, first run 2 min after boot
+systemctl list-timers hdsentinel-email.timer         # verify
+journalctl -u hdsentinel-email.service              # check runs
+```
+
+The timer fires every 15 min; the service is a oneshot that runs the script.
+
+**cron (systems without systemd)**
+
+`/etc/cron.d/hdsentinel-email` is installed by the package and runs as root every 15 min:
+
+```cron
+*/15 * * * * root /opt/hdsentinel/hdsentinel-email-alert
+```
+
+> Only keep **one** scheduler. If you enable the systemd timer, comment out / delete the cron entry
+> first, otherwise `daily` mode will send duplicate mails (in `alert` mode the cooldown suppresses
+> repeats).
+
+### Modes & cooldown
+
+- **`alert`** (default): the script compares each disk's Health / Performance / Temperature /
+  Highest-Temp against the thresholds and sends **one** mail listing every breach. If nothing is
+  breached, no mail is sent.
+- **`daily`**: every run sends the full `hdsentinel` report regardless of thresholds — useful as a
+  periodic heartbeat.
+- **Cooldown**: in `alert` mode the script signs the set of breaches (sorted
+  `device|model|metric|value`, sha256, first 16 hex). The same signature is suppressed for
+  `cooldown_minutes` (default 60); a *different* breach always sends immediately. The signature +
+  timestamp live in `state_file` (`/var/lib/hdsentinel/email-alert-state.json`).
+
+### Troubleshooting
+
+- **`错误: 未安装 curl`** — install `curl`; the script needs it for SMTP.
+- **No mail, no error** — check `smtp.to` is set, and that `email.conf` exists (the script falls back
+  to defaults otherwise, which may point at `root@localhost`).
+- **Mail not arriving** — run the script manually with `sudo` to see the `curl` exit code, and check
+  `journalctl -u hdsentinel-email.service` or the cron mail spool.
+- **Duplicate mails** — you have both schedulers enabled (see above).
+- Non-ASCII subjects are RFC 2047 encoded (`=?UTF-8?B?…?=`) automatically; bodies are `UTF-8 / 8bit`.
 
 ## Building locally (Linux)
 
