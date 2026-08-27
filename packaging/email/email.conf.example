@@ -2,15 +2,19 @@
 # 复制为 /etc/hdsentinel/email.conf 后修改并 chmod 600
 
 [smtp]
-# SMTP 服务器
-host = smtp.example.com
-port = 465
+# SMTP 服务器(默认本机 25 端口非加密中继)
+# 常见组合: 25=非加密/STARTTLS(use_tls); 465=SMTPS(use_ssl); 587=STARTTLS(use_tls)
+host = localhost
+port = 25
 # 登录凭据(留空表示匿名/本机中继)
 user =
 password =
-# 加密方式: use_ssl=true 走 SMTPS(465); use_tls=true 走 STARTTLS(587)
-# 注意: 两者只能一个为 true, 且要与 port 匹配(465=SMTPS, 587=STARTTLS)
-use_ssl = true
+# 加密方式: 三者互斥
+#   use_ssl=true  -> SMTPS(465, 全程加密)
+#   use_tls=true  -> 先用明文连 25/587 再 STARTTLS 升级加密
+#   use_ssl=use_tls=false -> 25 端口纯明文(本机中继/内网常见)
+# 注意: use_ssl 与 use_tls 只能一个为 true, 且要与 port 匹配
+use_ssl = false
 use_tls = false
 # 收发件人
 from = hdsentinel@yourhost.local
