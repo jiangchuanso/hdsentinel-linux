@@ -28,7 +28,7 @@ binaries.manifest                  架构 → 源文件映射
 binaries/                          构建时从官方源地址下载的二进制(.gitignore 忽略)
 scripts/download-binaries.sh       从官网抓取二进制(若不存在)
 scripts/build-packages.sh          用 fpm 生成 deb/rpm
-packaging/email/                   Python 邮件告警脚本 + 配置示例
+packaging/email/                   Bash 邮件告警脚本(依赖 curl) + 配置示例
 packaging/wrapper/                 /usr/bin/hdsentinel 包装器
 packaging/systemd/                 email 告警 service + timer
 packaging/cron/                    cron.d 兜底配置
@@ -39,8 +39,8 @@ packaging/cron/                    cron.d 兜底配置
 
 `hdsentinel` 命令行本身**没有**发信参数，邮件靠本包集成实现：
 
-- `/opt/hdsentinel/hdsentinel-email-alert`：Python3 脚本，按磁盘解析 `hdsentinel` 完整报告中的
-  **健康度 / 性能 / 温度 / 历史最高温度**，任一指标超阈值时经 SMTP 发信。
+- `/opt/hdsentinel/hdsentinel-email-alert`：Bash 脚本（依赖 curl），按磁盘解析 `hdsentinel` 完整报告中的
+  **健康度 / 性能 / 温度 / 历史最高温度**，任一指标超阈值时经 SMTP（curl）发信。
   支持同一告警冷却（默认 60 分钟），避免持续异常时邮件轰炸。
 - `/etc/hdsentinel/email.conf.example`：配置模板，复制为 `email.conf` 并改 SMTP 后 `chmod 600`。
 - 两种触发方式：

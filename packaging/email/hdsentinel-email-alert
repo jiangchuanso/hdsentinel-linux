@@ -1,258 +1,380 @@
-#!/usr/bin/env python3
-"""
-hdsentinel-email-alert — HD Sentinel 指标阈值邮件告警
+#!/usr/bin/env bash
+# hdsentinel-email-alert — HD Sentinel 指标阈值邮件告警 (bash + curl 版)
+#
+# 运行 Hard Disk Sentinel，按磁盘解析健康度/性能/温度等指标，任一指标超出阈值时
+# 通过 SMTP (curl) 发送邮件告警。支持对持续相同告警做冷却，避免邮件轰炸。
+#
+# 配置文件: /etc/hdsentinel/email.conf  (INI 格式, 见 email.conf.example)
+# 也可用环境变量 HDSENTINEL_EMAIL_CONF 指定其它路径。
+# 依赖: bash(4+)、curl、coreutils(timeout/sha256sum/date/base64)、grep/sed。
+set -o pipefail
 
-运行 Hard Disk Sentinel，按磁盘解析健康度/性能/温度等指标，任一指标超出阈值时
-通过 SMTP 发送邮件告警。支持对持续相同告警做冷却，避免邮件轰炸。
+DEFAULT_CONF="/etc/hdsentinel/email.conf"
+DEFAULT_STATE_FILE="/var/lib/hdsentinel/email-alert-state.json"
 
-配置文件: /etc/hdsentinel/email.conf  (INI 格式, 见 email.conf.example)
-也可用环境变量 HDSENTINEL_EMAIL_CONF 指定其它路径。
-"""
-import configparser
-import email.message
-import email.utils
-import hashlib
-import json
-import os
-import re
-import smtplib
-import ssl
-import subprocess
-import sys
-from datetime import datetime, timezone
+declare -A CFG
 
-DEFAULT_CONF = "/etc/hdsentinel/email.conf"
-HDSENTINEL = "/opt/hdsentinel/hdsentinel"
-DEFAULT_STATE_FILE = "/var/lib/hdsentinel/email-alert-state.json"
+# ---------------------------------------------------------------- 配置读取 ---
+# 与 python configparser 行为对齐: 段名/键名转小写, 值去掉首尾空白,
+# 仅支持整行注释(行首 # 或 ;), 键值内联的 # 不做注释处理。
 
+set_defaults() {
+  CFG=(
+    [smtp.host]=localhost
+    [smtp.port]=25
+    [smtp.user]=""
+    [smtp.password]=""
+    [smtp.use_tls]=false
+    [smtp.use_ssl]=false
+    [smtp.from]=hdsentinel@localhost
+    [smtp.to]=root@localhost
+    [smtp.subject_prefix]="[HD Sentinel Alert]"
+    [alert.mode]=alert
+    [alert.health_min]=60
+    [alert.performance_min]=60
+    [alert.temp_max]=55
+    [alert.highest_temp_max]=65
+    [alert.cooldown_minutes]=60
+    [alert.state_file]=$DEFAULT_STATE_FILE
+    [hdsentinel.path]=/opt/hdsentinel/hdsentinel
+    [hdsentinel.extra_args]=""
+  )
+}
 
-def load_config(path):
-    cp = configparser.ConfigParser()
-    cp["smtp"] = {
-        "host": "localhost",
-        "port": "25",
-        "user": "",
-        "password": "",
-        "use_tls": "false",
-        "use_ssl": "false",
-        "from": "hdsentinel@localhost",
-        "to": "root@localhost",
-        "subject_prefix": "[HD Sentinel Alert]",
-    }
-    cp["alert"] = {
-        "mode": "alert",              # alert = 超阈值才发; daily = 每次运行都发完整报告
-        "health_min": "60",           # 健康度低于此值(%)告警
-        "performance_min": "60",      # 性能低于此值(%)告警
-        "temp_max": "55",             # 当前温度高于此值(℃)告警
-        "highest_temp_max": "65",     # 历史最高温度高于此值(℃)告警
-        "cooldown_minutes": "60",     # 同一告警重复发送的最小间隔(0=不冷却)
-        "state_file": DEFAULT_STATE_FILE,
-    }
-    cp["hdsentinel"] = {
-        "path": HDSENTINEL,
-        # 留空输出完整报告(推荐); -solid 输出单行摘要(解析字段会受限)
-        "extra_args": "",
-    }
-    if os.path.exists(path):
-        cp.read(path)
-    return cp
+parse_conf() {
+  local file="$1" section="" key val line
+  [[ -f "$file" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"                                   # 兼容 CRLF
+    line="${line#"${line%%[![:space:]]*}"}"                # 去行首空白
+    [[ -z "$line" || "$line" == [#\;]* ]] && continue
+    if [[ "$line" == \[*\] ]]; then
+      section="${line#\[}"; section="${section%\]}"
+      section="${section,,}"; section="${section//[[:space:]]/}"
+      continue
+    fi
+    if [[ "$line" == *=* && -n "$section" ]]; then
+      key="${line%%=*}"; key="${key,,}"; key="${key//[[:space:]]/}"
+      val="${line#*=}"
+      val="${val#"${val%%[![:space:]]*}"}"                 # 去值首空白
+      val="${val%"${val##*[![:space:]]}"}"                 # 去值尾空白
+      CFG["$section.$key"]="$val"
+    fi
+  done < "$file"
+}
 
+# 布尔值解析, 与 configparser.getboolean 一致
+bool_cfg() {  # bool_cfg <section.key> <default>
+  local v="${CFG[$1]:-$2}"
+  case "${v,,}" in
+    true|yes|on|1) return 0 ;;
+    *)             return 1 ;;
+  esac
+}
 
-def get_report(hds_path, extra_args):
-    cmd = [hds_path] + (extra_args.split() if extra_args else [])
-    try:
-        res = subprocess.run(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            timeout=120, text=True,
-        )
-        return res.stdout or ""
-    except Exception as exc:  # noqa: BLE001
-        return "ERROR: 无法运行 hdsentinel (%s): %s" % (hds_path, exc)
+# ---------------------------------------------------------------- 报告解析 ---
+# hdsentinel 完整报告按空行拆成块, 每块含 "HDD Device" 即视为一个磁盘;
+# 提取 设备/型号/温度/历史最高温度/健康度/性能。正则与 python 版一一对应。
 
+extract() {  # extract <text> <regex> -> 打印捕获组 1
+  local t="$1" p="$2"
+  if [[ "$t" =~ $p ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+  fi
+}
 
-def parse_disks(report):
-    """把 hdsentinel 完整报告按空行拆成块，每块解析为一个磁盘的指标字典。"""
-    disks = []
-    # 按一个或多个空行拆分
-    blocks = re.split(r"\n\s*\n", report.strip())
-    for block in blocks:
-        lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
-        if not any("HDD Device" in ln for ln in lines):
-            continue
+parse_disks() {
+  local block="" line
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ -z "$line" ]]; then
+      [[ -n "$block" ]] && add_disk "$block"
+      block=""
+    else
+      block+="$line"$'\n'
+    fi
+  done
+  [[ -n "$block" ]] && add_disk "$block"
+}
 
-        def get(pattern, default=None, group=1):
-            for ln in lines:
-                m = re.search(pattern, ln)
-                if m:
-                    return m.group(group)
-            return default
+# 注意: bash `=~` 中 `.` 会匹配换行, 因此必须按行提取, 不能对整块做 `(.+)` 捕获。
+add_disk() {
+  local block="$1"
+  [[ "$block" == *"HDD Device"* ]] || return
+  local device="" model="" temp="" htemp="" health="" perf="" line
+  while IFS= read -r line; do
+    case "$line" in
+      *"HDD Device"*)
+        [[ -n "$device" ]] || device="$(extract "$line" 'HDD Device[[:space:]]*\(?[0-9]*\)?[[:space:]]*:[[:space:]]*(.+)')"
+        ;;
+      *"HDD Model ID"*)
+        [[ -n "$model" ]] || model="$(extract "$line" 'HDD Model ID[[:space:]]*:[[:space:]]*(.+)')"
+        ;;
+      *"Temperature"*)
+        [[ -n "$temp" ]] || temp="$(extract "$line" 'Temperature[[:space:]]*:[[:space:]]*([0-9]+)')"
+        ;;
+      *"Highest Temp"*)
+        [[ -n "$htemp" ]] || htemp="$(extract "$line" 'Highest Temp\.?[[:space:]]*:[[:space:]]*([0-9]+)')"
+        ;;
+      *"Health"*)
+        [[ -n "$health" ]] || health="$(extract "$line" 'Health[[:space:]]*:[[:space:]]*([0-9]+)')"
+        ;;
+      *"Performance"*)
+        [[ -n "$perf" ]] || perf="$(extract "$line" 'Performance[[:space:]]*:[[:space:]]*([0-9]+)')"
+        ;;
+    esac
+  done <<<"$block"
+  DEV_DEVICE+=("$device")
+  DEV_MODEL+=("$model")
+  DEV_TEMP+=("$temp")
+  DEV_HTEMP+=("$htemp")
+  DEV_HEALTH+=("$health")
+  DEV_PERF+=("$perf")
+}
 
-        def int_get(pattern, default=None):
-            v = get(pattern)
-            try:
-                return int(v) if v is not None else default
-            except (ValueError, TypeError):
-                return default
+# ---------------------------------------------------------------- 阈值评估 ---
+evaluate() {
+  VIO_DEV=() VIO_MODEL=() VIO_METRIC=() VIO_VALUE=() VIO_THR=()
+  local i d m
+  for i in "${!DEV_DEVICE[@]}"; do
+    d="${DEV_DEVICE[$i]}"
+    m="${DEV_MODEL[$i]:-未知型号}"
+    if [[ -n "${DEV_HEALTH[$i]}" ]] && (( ${DEV_HEALTH[$i]} < HEALTH_MIN )); then
+      VIO_DEV+=("$d"); VIO_MODEL+=("$m"); VIO_METRIC+=("健康度")
+      VIO_VALUE+=("${DEV_HEALTH[$i]}%"); VIO_THR+=("< $HEALTH_MIN%")
+    fi
+    if [[ -n "${DEV_PERF[$i]}" ]] && (( ${DEV_PERF[$i]} < PERF_MIN )); then
+      VIO_DEV+=("$d"); VIO_MODEL+=("$m"); VIO_METRIC+=("性能")
+      VIO_VALUE+=("${DEV_PERF[$i]}%"); VIO_THR+=("< $PERF_MIN%")
+    fi
+    if [[ -n "${DEV_TEMP[$i]}" ]] && (( ${DEV_TEMP[$i]} > TEMP_MAX )); then
+      VIO_DEV+=("$d"); VIO_MODEL+=("$m"); VIO_METRIC+=("温度")
+      VIO_VALUE+=("${DEV_TEMP[$i]}℃"); VIO_THR+=("> $TEMP_MAX℃")
+    fi
+    if [[ -n "${DEV_HTEMP[$i]}" ]] && (( ${DEV_HTEMP[$i]} > HI_MAX )); then
+      VIO_DEV+=("$d"); VIO_MODEL+=("$m"); VIO_METRIC+=("历史最高温度")
+      VIO_VALUE+=("${DEV_HTEMP[$i]}℃"); VIO_THR+=("> $HI_MAX℃")
+    fi
+  done
+}
 
-        device = get(r"HDD Device\s*(?:\d+)?\s*:\s*(.+)", "")
-        model = get(r"HDD Model ID\s*:\s*(.+)", "")
-        disks.append({
-            "device": device,
-            "model": model,
-            "temperature": int_get(r"Temperature\s*:\s*(\d+)"),
-            "highest_temp": int_get(r"Highest Temp\.\s*:\s*(\d+)"),
-            "health": int_get(r"Health\s*:\s*(\d+)"),
-            "performance": int_get(r"Performance\s*:\s*(\d+)"),
-            "raw": block,
-        })
-    return disks
+build_summary() {
+  printf '检测到 %d 个磁盘，其中 %d 项指标异常：\n' "${#DEV_DEVICE[@]}" "${#VIO_DEV[@]}"
+  local i
+  for i in "${!VIO_DEV[@]}"; do
+    printf '  • %s (%s): %s 当前 %s，阈值 %s\n' \
+      "${VIO_DEV[$i]}" "${VIO_MODEL[$i]}" "${VIO_METRIC[$i]}" "${VIO_VALUE[$i]}" "${VIO_THR[$i]}"
+  done
+  printf '\n完整报告：\n%s' "$REPORT"
+}
 
+# ---------------------------------------------------------------- 告警冷却 ---
+# 签名算法与 python 版一致: 对 "device|model|metric|value" 排序后
+# sha256("\n".join(sorted)) 取前 16 位十六进制; 状态文件保持 JSON 格式兼容。
 
-def evaluate(disks, cfg):
-    """返回 [(disk_idx, disk, metric, value, threshold), ...] 告警列表。"""
-    violations = []
-    health_min = cfg["alert"].getint("health_min")
-    perf_min = cfg["alert"].getint("performance_min")
-    temp_max = cfg["alert"].getint("temp_max")
-    hi_max = cfg["alert"].getint("highest_temp_max")
+iso_now() {
+  local d z
+  d="$(date -u +%Y-%m-%dT%H:%M:%S.%N)"
+  z="$(date -u +%z)"                       # +0000
+  z="${z:0:3}:${z:3:2}"                    # +00:00
+  printf '%s%s\n' "$d" "$z"
+}
 
-    for idx, d in enumerate(disks):
-        if d["health"] is not None and d["health"] < health_min:
-            violations.append((idx, d, "健康度", "%d%%" % d["health"], "< %d%%" % health_min))
-        if d["performance"] is not None and d["performance"] < perf_min:
-            violations.append((idx, d, "性能", "%d%%" % d["performance"], "< %d%%" % perf_min))
-        if d["temperature"] is not None and d["temperature"] > temp_max:
-            violations.append((idx, d, "温度", "%d℃" % d["temperature"], "> %d℃" % temp_max))
-        if d["highest_temp"] is not None and d["highest_temp"] > hi_max:
-            violations.append((idx, d, "历史最高温度", "%d℃" % d["highest_temp"], "> %d℃" % hi_max))
-    return violations
+update_state() {
+  mkdir -p "$(dirname "$STATE_FILE")"
+  printf '{"last_signature": "%s", "last_alert_time": "%s"}\n' "$SIG" "$(iso_now)" > "$STATE_FILE"
+}
 
+cooldown_check() {
+  # 计算本次告警签名
+  local -a sig_parts=()
+  local i sorted
+  for i in "${!VIO_DEV[@]}"; do
+    sig_parts+=("${VIO_DEV[$i]}|${VIO_MODEL[$i]}|${VIO_METRIC[$i]}|${VIO_VALUE[$i]}")
+  done
+  sorted="$(printf '%s\n' "${sig_parts[@]}" | LC_ALL=C sort)"
+  SIG="$(printf '%s' "$sorted" | sha256sum | cut -c1-16)"
 
-def build_summary(disks, violations):
-    lines = ["检测到 %d 个磁盘，其中 %d 项指标异常：\n" % (len(disks), len(violations))]
-    for idx, d, metric, value, threshold in violations:
-        lines.append(
-            "  • %s (%s): %s 当前 %s，阈值 %s" % (
-                d["device"], d["model"] or "未知型号", metric, value, threshold
-            )
-        )
-    lines.append("\n完整报告：\n")
-    return "\n".join(lines)
+  (( COOLDOWN > 0 )) || return 1           # 不冷却, 直接发送
 
+  local last_sig last_time last_epoch now elapsed
+  if [[ -f "$STATE_FILE" ]]; then
+    last_sig="$(sed -n 's/.*"last_signature"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$STATE_FILE" | head -n1)"
+    last_time="$(sed -n 's/.*"last_alert_time"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$STATE_FILE" | head -n1)"
+    if [[ -n "$last_time" ]] && last_epoch="$(date -u -d "$last_time" +%s 2>/dev/null)"; then
+      now="$(date -u +%s)"
+      elapsed=$(( (now - last_epoch) / 60 ))
+      if [[ "$last_sig" == "$SIG" ]] && (( elapsed < COOLDOWN )); then
+        echo "同一告警冷却中 ($elapsed/$COOLDOWN min)，跳过发送"
+        update_state
+        return 0                            # 冷却中, 跳过
+      fi
+    fi
+  fi
+  update_state
+  return 1
+}
 
-def load_state(path):
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:  # noqa: BLE001
-        return {}
+# ---------------------------------------------------------------- 发送邮件 ---
+# 依赖 curl: smtp:// 明文 / STARTTLS(--ssl-reqd), smtps:// SMTPS(465)。
+# 主题含非 ASCII(中文)时按 RFC 2047 编码为 =?UTF-8?B?...?=。
 
+rfc2047_encode() {
+  local s="$1" b64
+  if LC_ALL=C grep -q '[^ -~]' <<<"$s"; then
+    b64="$(printf '%s' "$s" | base64 -w0)"
+    printf '=?UTF-8?B?%s?=' "$b64"
+  else
+    printf '%s' "$s"
+  fi
+}
 
-def save_state(path, state):
-    os.makedirs(os.path.dirname(path) or "/var/lib/hdsentinel", mode=0o755, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(state, f)
+# 从 "Name <addr>" 中取裸地址, 用作 curl --mail-from (信封发件人)
+bare_addr() {
+  local s="$1"
+  if [[ "$s" =~ \<([^<>]+)\>$ ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+  else
+    printf '%s' "$s"
+  fi
+}
 
+send_mail() {  # send_mail <subject> <body>
+  local subject="$1" body="$2"
+  local host port from to user pass scheme
+  host="${CFG[smtp.host]}"
+  port="${CFG[smtp.port]:-25}"
+  from="${CFG[smtp.from]}"
+  to="${CFG[smtp.to]}"
+  user="${CFG[smtp.user]}"
+  pass="${CFG[smtp.password]}"
 
-def is_cooldown(violations, cfg):
-    """若当前告警与上次相同且在冷却期内，返回 True。"""
-    cooldown = cfg["alert"].getint("cooldown_minutes")
-    if cooldown <= 0 or not violations:
-        return False
-    state_file = cfg["alert"]["state_file"]
-    state = load_state(state_file)
+  command -v curl >/dev/null 2>&1 || { echo "错误: 未安装 curl" >&2; return 1; }
 
-    sig_parts = ["%s|%s|%s|%s" % (d["device"], d["model"], m, v) for _, d, m, v, _ in violations]
-    sig = hashlib.sha256("\n".join(sorted(sig_parts)).encode("utf-8")).hexdigest()[:16]
+  local -a rcpts=() addrs
+  local a
+  IFS=',' read -ra addrs <<<"$to"
+  for a in "${addrs[@]}"; do
+    a="${a//[[:space:]]/}"
+    [[ -n "$a" ]] && rcpts+=("$a")
+  done
+  if (( ${#rcpts[@]} == 0 )); then
+    echo "未配置收件人 (smtp.to)" >&2
+    return 1
+  fi
 
-    now = datetime.now(timezone.utc)
-    if state.get("last_signature") == sig:
-        try:
-            last = datetime.fromisoformat(state["last_alert_time"])
-            if not last.tzinfo:
-                last = last.replace(tzinfo=timezone.utc)
-            elapsed = (now - last).total_seconds() / 60.0
-            if elapsed < cooldown:
-                print("同一告警冷却中 (%.0f/%.0f min)，跳过发送" % (elapsed, cooldown))
-                return True
-        except Exception:  # noqa: BLE001
-            pass
+  scheme="smtp"
+  local -a ssl_opt=()
+  if bool_cfg smtp.use_ssl false; then
+    scheme="smtps"
+  elif bool_cfg smtp.use_tls false; then
+    ssl_opt=(--ssl-reqd)
+  fi
 
-    state["last_signature"] = sig
-    state["last_alert_time"] = now.isoformat()
-    save_state(state_file, state)
-    return False
+  # 构造带 RFC 头部的邮件正文 (curl 不做 RFC 2047, 主题需手工编码)
+  local mailfile
+  mailfile="$(mktemp)" || return 1
+  {
+    printf 'From: %s\n' "$from"
+    printf 'To: %s\n' "$to"
+    printf 'Subject: %s\n' "$(rfc2047_encode "$subject")"
+    printf 'Date: %s\n' "$(date -u -R)"
+    printf 'MIME-Version: 1.0\n'
+    printf 'Content-Type: text/plain; charset=UTF-8\n'
+    printf 'Content-Transfer-Encoding: 8bit\n'
+    printf '\n%s\n' "$body"
+  } > "$mailfile"
 
+  local -a args=(
+    --url "${scheme}://${host}:${port}"
+    --mail-from "$(bare_addr "$from")"
+    --silent --show-error --fail
+    --connect-timeout 15
+    --max-time 60
+  )
+  for a in "${rcpts[@]}"; do
+    args+=(--mail-rcpt "$a")
+  done
+  [[ -n "$user" ]] && args+=(--user "${user}:${pass}")
+  args+=("${ssl_opt[@]}")
+  args+=(-T "$mailfile")
 
-def send_email(cfg, subject, body):
-    s = cfg["smtp"]
-    to_addrs = [a.strip() for a in s["to"].split(",") if a.strip()]
-    if not to_addrs:
-        print("未配置收件人 (smtp.to)", file=sys.stderr)
-        return False
+  local rc=0
+  curl "${args[@]}" || rc=$?
+  rm -f "$mailfile"
 
-    # 用 EmailMessage 构造: 主题/正文中的非 ASCII 字符(中文等)会被正确编码
-    # (Header 走 RFC 2047, 正文走 UTF-8), 避免 smtplib 手工拼串时报 ASCII 编码错误
-    # 或被服务器拒收。
-    msg = email.message.EmailMessage()
-    msg["From"] = s["from"]
-    msg["To"] = ", ".join(to_addrs)
-    msg["Subject"] = subject
-    msg["Date"] = email.utils.formatdate(localtime=False)
-    msg.set_content(body)
-    host, port = s["host"], int(s["port"])
+  if (( rc != 0 )); then
+    echo "邮件发送失败: curl 退出码 $rc (${scheme}://${host}:${port})" >&2
+    return 1
+  fi
+  return 0
+}
 
-    def auth(srv):
-        if s["user"]:
-            srv.login(s["user"], s["password"])
+# ------------------------------------------------------------------ 主流程 ---
+main() {
+  local conf="${HDSENTINEL_EMAIL_CONF:-$DEFAULT_CONF}"
+  set_defaults
+  parse_conf "$conf"
 
-    try:
-        if s.getboolean("use_ssl"):
-            with smtplib.SMTP_SSL(host, port, context=ssl.create_default_context()) as srv:
-                auth(srv)
-                srv.send_message(msg)
-        else:
-            with smtplib.SMTP(host, port) as srv:
-                if s.getboolean("use_tls"):
-                    srv.starttls(context=ssl.create_default_context())
-                auth(srv)
-                srv.send_message(msg)
-        return True
-    except Exception as exc:  # noqa: BLE001
-        print("邮件发送失败: %s" % exc, file=sys.stderr)
-        return False
+  local path extra_args
+  path="${CFG[hdsentinel.path]:-/opt/hdsentinel/hdsentinel}"
+  extra_args="${CFG[hdsentinel.extra_args]:-}"
 
+  # 与 python subprocess 一致: 超时 120s, stderr 并入 stdout
+  REPORT="$(timeout 120 "$path" $extra_args 2>&1 || true)"
+  if [[ -z "$REPORT" ]]; then
+    echo "错误: hdsentinel 无输出 ($path)" >&2
+    return 1
+  fi
 
-def main():
-    cfg = load_config(os.environ.get("HDSENTINEL_EMAIL_CONF", DEFAULT_CONF))
-    path = cfg["hdsentinel"]["path"]
-    report = get_report(path, cfg["hdsentinel"].get("extra_args", ""))
+  DEV_DEVICE=() DEV_MODEL=() DEV_TEMP=() DEV_HTEMP=() DEV_HEALTH=() DEV_PERF=()
+  parse_disks <<<"$REPORT"
+  if (( ${#DEV_DEVICE[@]} == 0 )); then
+    echo "未解析到任何磁盘信息。hdsentinel 输出如下：" >&2
+    echo "$REPORT" >&2
+    return 1
+  fi
 
-    disks = parse_disks(report)
-    if not disks:
-        print("未解析到任何磁盘信息。hdsentinel 输出如下：\n%s" % report, file=sys.stderr)
-        return 1
+  HEALTH_MIN="${CFG[alert.health_min]:-60}"
+  PERF_MIN="${CFG[alert.performance_min]:-60}"
+  TEMP_MAX="${CFG[alert.temp_max]:-55}"
+  HI_MAX="${CFG[alert.highest_temp_max]:-65}"
+  COOLDOWN="${CFG[alert.cooldown_minutes]:-60}"
+  STATE_FILE="${CFG[alert.state_file]:-$DEFAULT_STATE_FILE}"
 
-    if cfg["alert"]["mode"] == "daily":
-        summary = "HD Sentinel 每日状态报告\n\n" + report
-        ok = send_email(cfg, "%s 每日状态报告" % cfg["smtp"]["subject_prefix"], summary)
-        print("每日报告已发送" if ok else "每日报告发送失败")
-        return 0
+  local mode="${CFG[alert.mode]:-alert}"
+  local subject body prefix="${CFG[smtp.subject_prefix]:-[HD Sentinel Alert]}"
 
-    violations = evaluate(disks, cfg)
-    if not violations:
-        print("无告警：%d 个磁盘均正常" % len(disks))
-        return 0
+  if [[ "$mode" == daily ]]; then
+    body="HD Sentinel 每日状态报告
 
-    if is_cooldown(violations, cfg):
-        return 0
-
-    subject = "%s %d 项磁盘指标异常" % (cfg["smtp"]["subject_prefix"], len(violations))
-    body = build_summary(disks, violations) + report
-    ok = send_email(cfg, subject, body)
-    print("告警已发送：%d 项指标异常" % len(violations) if ok else "告警发送失败")
+$REPORT"
+    subject="$prefix 每日状态报告"
+    if send_mail "$subject" "$body"; then
+      echo "每日报告已发送"
+    else
+      echo "每日报告发送失败"
+    fi
     return 0
+  fi
 
+  evaluate
+  if (( ${#VIO_DEV[@]} == 0 )); then
+    echo "无告警：${#DEV_DEVICE[@]} 个磁盘均正常"
+    return 0
+  fi
 
-if __name__ == "__main__":
-    sys.exit(main())
+  if cooldown_check; then
+    return 0
+  fi
+
+  subject="$prefix ${#VIO_DEV[@]} 项磁盘指标异常"
+  body="$(build_summary)"
+  if send_mail "$subject" "$body"; then
+    echo "告警已发送：${#VIO_DEV[@]} 项指标异常"
+  else
+    echo "告警发送失败"
+  fi
+  return 0
+}
+
+main "$@"

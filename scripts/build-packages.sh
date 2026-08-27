@@ -80,7 +80,7 @@ build_one() {
     --vendor "H.D.S. Hungary" --license "Freeware (HD Sentinel © H.D.S. Hungary)"
     --url "https://www.hdsentinel.com"
     --category "utils" --provides hdsentinel --provides hdsentinel-email-alert
-    --depends python3 --rpm-os linux
+    --depends curl --rpm-os linux
   )
 
   echo "    -> deb ($debarch, iter ${iter:-$PKG_ITER})"
