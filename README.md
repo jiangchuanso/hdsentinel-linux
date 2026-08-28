@@ -33,10 +33,9 @@ binaries.manifest                  arch → source file mapping
 binaries/                          binaries downloaded from the official source at build time (.gitignore'd)
 scripts/download-binaries.sh       fetch binaries from the official site (if missing)
 scripts/build-packages.sh          generate deb/rpm with fpm
-packaging/email/                   Bash e-mail alert script (requires curl) + config example
+packaging/email/                   Bash e-mail alert script (requires curl, SMTP) + config example
 packaging/wrapper/                 /usr/bin/hdsentinel wrapper
-packaging/systemd/                 e-mail alert service + timer
-packaging/cron/                    cron.d fallback config
+packaging/cron/                    cron.d schedule (every 15 min, runs as root)
 .github/workflows/build-packages.yml   CI multi-arch build + Release
 ```
 
@@ -48,41 +47,57 @@ The `hdsentinel` CLI itself has **no** mail option, so sending e-mail is impleme
   **Health / Performance / Temperature / Highest temperature** per disk from the full `hdsentinel`
   report and sends an SMTP e-mail (via curl) whenever any metric exceeds its threshold.
   Includes per-alert cooldown (60 min by default) to avoid mail flooding during persistent failures.
-- `/etc/hdsentinel/email.conf.example`: config template — copy it to `email.conf`, edit the SMTP
-  settings, then `chmod 600`.
-- Two ways to trigger it:
-  - **systemd** (recommended): `systemctl enable --now hdsentinel-email.timer` (checks every 15 min)
-  - **cron**: `/etc/cron.d/hdsentinel-email` is installed with the package (runs as root every 15 min)
-
-> Keep **only one** of the two schedulers: after enabling the systemd timer, remove/comment out
-> `/etc/cron.d/hdsentinel-email`, otherwise it fires twice (alert mode is saved by cooldown, but
-> daily mode will send duplicate mails).
-- Modes: `alert` (send only when a threshold is exceeded) or `daily` (send the full report on every
-  run), see `alert.mode` in the config.
+- `/etc/hdsentinel/email.conf`: SMTP config installed by default — edit it, then `chmod 600`.
+- Triggered by **cron** every 15 minutes as root: `/etc/cron.d/hdsentinel-email` is installed with
+  the package. Edit it to change the interval or disable it.
+- Mail is sent **only when a metric breaches its threshold**; a fully healthy run sends nothing.
 
 ### Quick start
 
 ```bash
-# 1. Install the package (deb/rpm), then create the config from the template
-sudo cp /etc/hdsentinel/email.conf.example /etc/hdsentinel/email.conf
+# 1. Install the package (deb/rpm); the default config is already at /etc/hdsentinel/email.conf
 sudo chmod 600 /etc/hdsentinel/email.conf
 
 # 2. Edit SMTP + thresholds (see reference below)
 sudoeditor /etc/hdsentinel/email.conf
 
-# 3. Make sure the state directory exists (for the cooldown signature)
-sudo mkdir -p /var/lib/hdsentinel
+# 3. Send a test mail through the alert service itself (see "Sending a test mail")
+sudo /opt/hdsentinel/hdsentinel-email-alert --test-mail
 
 # 4. Test a run manually — prints what it would do, and actually sends mail if a
-#    threshold is breached (or if mode=daily)
+#    threshold is breached
 sudo /opt/hdsentinel/hdsentinel-email-alert
 
-# 5. Enable the scheduler (systemd recommended)
-sudo systemctl enable --now hdsentinel-email.timer
+# 5. The scheduler ships with the package: verify the cron entry is present
+ls -l /etc/cron.d/hdsentinel-email
 ```
 
-The default install does **not** send anything until `email.conf` exists with valid SMTP
-credentials. A manual run prints one of: `无告警 / 告警已发送 / 每日报告已发送 / 同一告警冷却中`.
+> The cooldown state directory `/var/lib/hdsentinel` is created automatically by the script via
+> `mkdir -p`, so no manual step is needed.
+
+If SMTP settings are missing or incomplete, the script prints a clear error telling you to edit
+`/etc/hdsentinel/email.conf`; it does **not** send anything until valid SMTP is configured.
+A manual run prints one of: `无告警 / 告警已发送 / 同一告警冷却中`.
+
+### Sending a test mail
+
+The SMTP settings in `email.conf` are the **only** source the script uses for sending. After
+editing the config, send a test mail by **calling the alert service itself** — it reuses the
+script's own SMTP logic (identical to scheduled runs), no curl commands needed:
+
+```bash
+sudo /opt/hdsentinel/hdsentinel-email-alert --test-mail
+```
+
+The script reads `/etc/hdsentinel/email.conf` (override with `HDSENTINEL_EMAIL_CONF`) and delivers
+a test mail to the recipients in `smtp.to`. On success it prints `测试邮件已发送 至: ...`; on
+failure it prints the reason. Common failures:
+
+- `SMTP 配置不完整 (smtp.host / smtp.port / smtp.from 必填)` — settings are missing, fill them in;
+- `curl: (67) Access denied` — wrong username/password, or auth is required but `smtp.user` is empty;
+- `curl: (60) SSL certificate problem` — self-signed certificate. Add `-k` temporarily for testing;
+  configure a trusted CA for production;
+- Timeout or `Connection refused` — check `host`/`port` and firewall rules.
 
 ### Configuration reference
 
@@ -112,9 +127,9 @@ to = admin@example.com, oncall@example.com
 subject_prefix = [HD Sentinel Alert]
 
 [alert]
-# mode: alert = mail only when a threshold is breached;
-#       daily = mail the full report on every run.
-mode = alert
+# Mail is sent only when a metric breaches its threshold; a healthy run sends nothing.
+# (The old mode = daily "mail the full report on every run" has been removed; a leftover
+#  mode key is ignored.)
 # Per-disk thresholds:
 health_min = 60          # alert when any disk Health  < this (%)
 performance_min = 60     # alert when any disk Performance < this (%)
@@ -124,6 +139,12 @@ highest_temp_max = 65    # alert when any disk Highest Temp > this (℃)
 cooldown_minutes = 60
 # State file storing the last alert signature + time (for cooldown)
 state_file = /var/lib/hdsentinel/email-alert-state.json
+# Mail body format:
+#   text = plain-text report (default)
+#   html = run "hdsentinel -html -r <tmpfile>" and use that HTML report as the mail body
+#          (same as the official script). Thresholds are still parsed from the stdout text report;
+#          this only changes the mail body.
+report_format = text
 
 [hdsentinel]
 # Path to the hdsentinel binary, and any extra args.
@@ -173,48 +194,36 @@ use_tls = false
 
 ### Scheduling
 
-**systemd (recommended)**
-
-```bash
-sudo systemctl enable --now hdsentinel-email.timer   # every 15 min, first run 2 min after boot
-systemctl list-timers hdsentinel-email.timer         # verify
-journalctl -u hdsentinel-email.service              # check runs
-```
-
-The timer fires every 15 min; the service is a oneshot that runs the script.
-
-**cron (systems without systemd)**
-
-`/etc/cron.d/hdsentinel-email` is installed by the package and runs as root every 15 min:
+The package installs `/etc/cron.d/hdsentinel-email`, which runs the alert script as **root** every
+15 minutes:
 
 ```cron
-*/15 * * * * root /opt/hdsentinel/hdsentinel-email-alert
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=""
+*/15 * * * * root /opt/hdsentinel/hdsentinel-email-alert >> /var/log/hdsentinel-email.log 2>&1
 ```
 
-> Only keep **one** scheduler. If you enable the systemd timer, comment out / delete the cron entry
-> first, otherwise `daily` mode will send duplicate mails (in `alert` mode the cooldown suppresses
-> repeats).
+Output goes to `/var/log/hdsentinel-email.log` (it grows over time — add a logrotate rule if you
+care). `PATH` is declared explicitly because cron's default PATH is very narrow and must find `curl`.
+To change the interval, edit the `*/15` field (or comment the line to disable).
 
-### Modes & cooldown
+### Alerting & cooldown
 
-- **`alert`** (default): the script compares each disk's Health / Performance / Temperature /
-  Highest-Temp against the thresholds and sends **one** mail listing every breach. If nothing is
-  breached, no mail is sent.
-- **`daily`**: every run sends the full `hdsentinel` report regardless of thresholds — useful as a
-  periodic heartbeat.
-- **Cooldown**: in `alert` mode the script signs the set of breaches (sorted
-  `device|model|metric|value`, sha256, first 16 hex). The same signature is suppressed for
-  `cooldown_minutes` (default 60); a *different* breach always sends immediately. The signature +
-  timestamp live in `state_file` (`/var/lib/hdsentinel/email-alert-state.json`).
+- The script compares each disk's Health / Performance / Temperature / Highest-Temp against the
+  thresholds and sends **one** mail listing every breach. If nothing is breached, no mail is sent.
+- **Cooldown**: the script signs the set of breaches (sorted `device|model|metric|value`, sha256,
+  first 16 hex). The same signature is suppressed for `cooldown_minutes` (default 60); a *different*
+  breach always sends immediately. The signature + timestamp live in `state_file`
+  (`/var/lib/hdsentinel/email-alert-state.json`).
 
 ### Troubleshooting
 
 - **`错误: 未安装 curl`** — install `curl`; the script needs it for SMTP.
-- **No mail, no error** — check `smtp.to` is set, and that `email.conf` exists (the script falls back
-  to defaults otherwise, which may point at `root@localhost`).
+- **No mail, no error** — check `smtp.to` is set, and that `email.conf` exists (if SMTP settings are
+  missing, the script prints a clear error telling you to edit `/etc/hdsentinel/email.conf`).
 - **Mail not arriving** — run the script manually with `sudo` to see the `curl` exit code, and check
-  `journalctl -u hdsentinel-email.service` or the cron mail spool.
-- **Duplicate mails** — you have both schedulers enabled (see above).
+  `/var/log/hdsentinel-email.log`.
 - Non-ASCII subjects are RFC 2047 encoded (`=?UTF-8?B?…?=`) automatically; bodies are `UTF-8 / 8bit`.
 
 ## Building locally (Linux)
@@ -248,5 +257,5 @@ ls dist/
   temporarily from the official source `https://www.hdsentinel.com/hdslin/` at build time and
   bundled into the packages. Before publishing the resulting `.deb`/`.rpm` publicly, verify that
   the HD Sentinel license permits redistribution of its binaries.
-- **This repository's build scripts, systemd/cron units, e-mail alert config and documentation**
+- **This repository's build scripts, cron unit, e-mail alert config and documentation**
   (not the binaries above): MIT-licensed, see [LICENSE](LICENSE).

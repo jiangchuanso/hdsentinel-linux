@@ -22,7 +22,7 @@ build_one() {
 
   local stage; stage="$(mktemp -d)"
   mkdir -p "$stage/opt/hdsentinel" "$stage/usr/bin" "$stage/etc/hdsentinel" \
-           "$stage/lib/systemd/system" "$stage/etc/cron.d"
+           "$stage/etc/cron.d"
 
   # 1) 提取对应架构的 hdsentinel 可执行文件
   local bin="$stage/opt/hdsentinel/hdsentinel"
@@ -59,17 +59,16 @@ build_one() {
   # 2) 打包 email 告警集成
   cp "$ROOT/packaging/email/hdsentinel-email-alert" "$stage/opt/hdsentinel/"
   chmod 0755 "$stage/opt/hdsentinel/hdsentinel-email-alert"
-  cp "$ROOT/packaging/email/email.conf.example" "$stage/etc/hdsentinel/email.conf.example"
+  # 默认配置文件不带 .example 后缀(模板源为 packaging/email/email.conf.example);
+  # 含 SMTP 密码, 安装时收紧为 0600。
+  cp "$ROOT/packaging/email/email.conf.example" "$stage/etc/hdsentinel/email.conf"
+  chmod 0600 "$stage/etc/hdsentinel/email.conf"
 
   # 3) 命令行包装器 (/usr/bin/hdsentinel)
   cp "$ROOT/packaging/wrapper/hdsentinel" "$stage/usr/bin/hdsentinel"
   chmod 0755 "$stage/usr/bin/hdsentinel"
 
-  # 4) systemd 定时器 + 服务(发送告警/每日报告)
-  cp "$ROOT/packaging/systemd/hdsentinel-email.service" "$stage/lib/systemd/system/"
-  cp "$ROOT/packaging/systemd/hdsentinel-email.timer"   "$stage/lib/systemd/system/"
-
-  # 5) cron.d(兼容无 systemd 的系统)
+  # 4) cron.d(每 15 分钟以 root 运行告警脚本)
   cp "$ROOT/packaging/cron/hdsentinel-email" "$stage/etc/cron.d/hdsentinel-email"
 
   local common=(
@@ -84,7 +83,7 @@ build_one() {
   )
 
   echo "    -> deb ($debarch, iter ${iter:-$PKG_ITER})"
-  # --deb-recommends 是 deb 专属选项(旧版 fpm 无通用 --recommends); 无 systemd 时由 cron 兜底
+  # --deb-recommends 是 deb 专属选项(旧版 fpm 无通用 --recommends); cron 是唯一调度方式, 一并装上
   fpm "${common[@]}" --deb-recommends cron -t deb -a "$debarch" \
       -p "$OUT_DIR/hdsentinel_${PKG_VER}-${iter:-$PKG_ITER}_${debarch}.deb" .
 

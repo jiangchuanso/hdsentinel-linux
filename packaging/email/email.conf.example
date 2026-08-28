@@ -1,5 +1,6 @@
-# HD Sentinel 指标阈值邮件告警配置示例
-# 复制为 /etc/hdsentinel/email.conf 后修改并 chmod 600
+# HD Sentinel 指标阈值邮件告警配置
+# 本文件在仓库中保存为 email.conf.example(模板); 安装 deb/rpm 后默认
+# 即为 /etc/hdsentinel/email.conf(不带 .example 后缀), 直接编辑修改并 chmod 600。
 
 [smtp]
 # SMTP 服务器(默认本机 25 端口非加密中继)
@@ -22,8 +23,8 @@ to = admin@example.com, oncall@example.com
 subject_prefix = [HD Sentinel Alert]
 
 [alert]
-# 模式: alert = 仅超阈值时发送邮件; daily = 每次运行都发送完整报告
-mode = alert
+# 只在任一指标超阈值时发送告警邮件; 全部正常则不发信。
+# (早期版本的 mode = daily 「每次运行都发完整报告」已移除, 残留的 mode 键会被忽略)
 # 任一磁盘健康度低于该值(%)触发告警
 health_min = 60
 # 任一磁盘性能低于该值(%)触发告警
@@ -36,6 +37,11 @@ highest_temp_max = 65
 cooldown_minutes = 60
 # 告警状态文件(记录上次告警签名和时间)
 state_file = /var/lib/hdsentinel/email-alert-state.json
+# 邮件正文格式(与官方 GenerateHDReport.sh 对齐)
+#   text = 纯文本报告(默认)
+#   html = 执行 "hdsentinel -html -r <临时文件>", 把生成的 HTML 报告作为邮件正文
+#          注意: 阈值解析仍基于 stdout 的文本报告, HTML 只影响邮件正文
+report_format = text
 
 [hdsentinel]
 # hdsentinel 二进制路径
