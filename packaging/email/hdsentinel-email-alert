@@ -4,13 +4,19 @@
 # 运行 Hard Disk Sentinel，按磁盘解析健康度/性能/温度等指标，任一指标超出阈值时
 # 通过 SMTP (curl) 发送邮件告警。支持对持续相同告警做冷却，避免邮件轰炸。
 #
+# 用法: hdsentinel-email-alert [--test-mail]
+#   --test-mail   不运行 hdsentinel, 直接发一封测试邮件验证 SMTP 配置
+#
 # 配置文件: /etc/hdsentinel/email.conf  (INI 格式, 见 email.conf.example)
 # 也可用环境变量 HDSENTINEL_EMAIL_CONF 指定其它路径。
+# SMTP 配置(host/port/user/password/from/to 等)一律从配置文件读取, 脚本不内置默认值。
 # 依赖: bash(4+)、curl、coreutils(timeout/sha256sum/date/base64)、grep/sed。
 set -o pipefail
 
 DEFAULT_CONF="/etc/hdsentinel/email.conf"
 DEFAULT_STATE_FILE="/var/lib/hdsentinel/email-alert-state.json"
+
+CONF_FILE="$DEFAULT_CONF"
 
 declare -A CFG
 
@@ -18,17 +24,10 @@ declare -A CFG
 # 与 python configparser 行为对齐: 段名/键名转小写, 值去掉首尾空白,
 # 仅支持整行注释(行首 # 或 ;), 键值内联的 # 不做注释处理。
 
+# 注意: 这里不内置任何 SMTP 默认配置(smtp.host/port/user/password/from/to 等),
+# 全部必须来自配置文件 email.conf, 否则 send_mail 会明确报错并提示编辑配置文件。
 set_defaults() {
   CFG=(
-    [smtp.host]=localhost
-    [smtp.port]=25
-    [smtp.user]=""
-    [smtp.password]=""
-    [smtp.use_tls]=false
-    [smtp.use_ssl]=false
-    [smtp.from]=hdsentinel@localhost
-    [smtp.to]=root@localhost
-    [smtp.subject_prefix]="[HD Sentinel Alert]"
     [alert.mode]=alert
     [alert.health_min]=60
     [alert.performance_min]=60
@@ -241,14 +240,19 @@ bare_addr() {
 send_mail() {  # send_mail <subject> <body>
   local subject="$1" body="$2"
   local host port from to user pass scheme
-  host="${CFG[smtp.host]}"
-  port="${CFG[smtp.port]:-25}"
-  from="${CFG[smtp.from]}"
-  to="${CFG[smtp.to]}"
-  user="${CFG[smtp.user]}"
-  pass="${CFG[smtp.password]}"
+  host="${CFG[smtp.host]:-}"
+  port="${CFG[smtp.port]:-}"
+  from="${CFG[smtp.from]:-}"
+  to="${CFG[smtp.to]:-}"
+  user="${CFG[smtp.user]:-}"
+  pass="${CFG[smtp.password]:-}"
 
   command -v curl >/dev/null 2>&1 || { echo "错误: 未安装 curl" >&2; return 1; }
+
+  if [[ -z "$host" || -z "$port" || -z "$from" ]]; then
+    echo "错误: SMTP 配置不完整 (smtp.host / smtp.port / smtp.from 必填)，脚本不内置 SMTP 配置。请编辑 ${CONF_FILE:-$DEFAULT_CONF}" >&2
+    return 1
+  fi
 
   local -a rcpts=() addrs
   local a
@@ -309,11 +313,36 @@ send_mail() {  # send_mail <subject> <body>
   return 0
 }
 
+# ---------------------------------------------------------------- 测试邮件 ---
+# 复用 send_mail, 不运行 hdsentinel, 仅验证 SMTP 配置。
+send_test_mail() {
+  local to="${CFG[smtp.to]:-}"
+  local subject body
+  subject="${CFG[smtp.subject_prefix]:-[HD Sentinel Alert]} 测试邮件"
+  body="这是一封来自 HD Sentinel 邮件告警服务的测试邮件。
+
+SMTP 配置验证通过。
+时间: $(date -u -R)"
+  if send_mail "$subject" "$body"; then
+    echo "测试邮件已发送${to:+ 至: $to}"
+    return 0
+  else
+    echo "测试邮件发送失败，请检查 ${CONF_FILE:-$DEFAULT_CONF} 中的 SMTP 配置" >&2
+    return 1
+  fi
+}
+
 # ------------------------------------------------------------------ 主流程 ---
 main() {
   local conf="${HDSENTINEL_EMAIL_CONF:-$DEFAULT_CONF}"
+  CONF_FILE="$conf"
   set_defaults
   parse_conf "$conf"
+
+  if [[ "${1:-}" == "--test-mail" ]]; then
+    send_test_mail
+    return $?
+  fi
 
   local path extra_args
   path="${CFG[hdsentinel.path]:-/opt/hdsentinel/hdsentinel}"

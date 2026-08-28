@@ -59,7 +59,10 @@ build_one() {
   # 2) 打包 email 告警集成
   cp "$ROOT/packaging/email/hdsentinel-email-alert" "$stage/opt/hdsentinel/"
   chmod 0755 "$stage/opt/hdsentinel/hdsentinel-email-alert"
-  cp "$ROOT/packaging/email/email.conf.example" "$stage/etc/hdsentinel/email.conf.example"
+  # 默认配置文件不带 .example 后缀(模板源为 packaging/email/email.conf.example);
+  # 含 SMTP 密码, 安装时收紧为 0600。
+  cp "$ROOT/packaging/email/email.conf.example" "$stage/etc/hdsentinel/email.conf"
+  chmod 0600 "$stage/etc/hdsentinel/email.conf"
 
   # 3) 命令行包装器 (/usr/bin/hdsentinel)
   cp "$ROOT/packaging/wrapper/hdsentinel" "$stage/usr/bin/hdsentinel"

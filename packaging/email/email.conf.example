@@ -1,5 +1,6 @@
-# HD Sentinel 指标阈值邮件告警配置示例
-# 复制为 /etc/hdsentinel/email.conf 后修改并 chmod 600
+# HD Sentinel 指标阈值邮件告警配置
+# 本文件在仓库中保存为 email.conf.example(模板); 安装 deb/rpm 后默认
+# 即为 /etc/hdsentinel/email.conf(不带 .example 后缀), 直接编辑修改并 chmod 600。
 
 [smtp]
 # SMTP 服务器(默认本机 25 端口非加密中继)

@@ -48,8 +48,7 @@ The `hdsentinel` CLI itself has **no** mail option, so sending e-mail is impleme
   **Health / Performance / Temperature / Highest temperature** per disk from the full `hdsentinel`
   report and sends an SMTP e-mail (via curl) whenever any metric exceeds its threshold.
   Includes per-alert cooldown (60 min by default) to avoid mail flooding during persistent failures.
-- `/etc/hdsentinel/email.conf.example`: config template — copy it to `email.conf`, edit the SMTP
-  settings, then `chmod 600`.
+- `/etc/hdsentinel/email.conf`: SMTP config installed by default — edit it, then `chmod 600`.
 - Two ways to trigger it:
   - **systemd** (recommended): `systemctl enable --now hdsentinel-email.timer` (checks every 15 min)
   - **cron**: `/etc/cron.d/hdsentinel-email` is installed with the package (runs as root every 15 min)
@@ -63,26 +62,49 @@ The `hdsentinel` CLI itself has **no** mail option, so sending e-mail is impleme
 ### Quick start
 
 ```bash
-# 1. Install the package (deb/rpm), then create the config from the template
-sudo cp /etc/hdsentinel/email.conf.example /etc/hdsentinel/email.conf
+# 1. Install the package (deb/rpm); the default config is already at /etc/hdsentinel/email.conf
 sudo chmod 600 /etc/hdsentinel/email.conf
 
 # 2. Edit SMTP + thresholds (see reference below)
 sudoeditor /etc/hdsentinel/email.conf
 
-# 3. Make sure the state directory exists (for the cooldown signature)
+# 3. Send a test mail through the alert service itself (see "Sending a test mail")
+sudo /opt/hdsentinel/hdsentinel-email-alert --test-mail
+
+# 4. Make sure the state directory exists (for the cooldown signature)
 sudo mkdir -p /var/lib/hdsentinel
 
-# 4. Test a run manually — prints what it would do, and actually sends mail if a
+# 5. Test a run manually — prints what it would do, and actually sends mail if a
 #    threshold is breached (or if mode=daily)
 sudo /opt/hdsentinel/hdsentinel-email-alert
 
-# 5. Enable the scheduler (systemd recommended)
+# 6. Enable the scheduler (systemd recommended)
 sudo systemctl enable --now hdsentinel-email.timer
 ```
 
-The default install does **not** send anything until `email.conf` exists with valid SMTP
-credentials. A manual run prints one of: `无告警 / 告警已发送 / 每日报告已发送 / 同一告警冷却中`.
+If SMTP settings are missing or incomplete, the script prints a clear error telling you to edit
+`/etc/hdsentinel/email.conf`; it does **not** send anything until valid SMTP is configured.
+A manual run prints one of: `无告警 / 告警已发送 / 每日报告已发送 / 同一告警冷却中`.
+
+### Sending a test mail
+
+The SMTP settings in `email.conf` are the **only** source the script uses for sending. After
+editing the config, send a test mail by **calling the alert service itself** — it reuses the
+script's own SMTP logic (identical to scheduled runs), no curl commands needed:
+
+```bash
+sudo /opt/hdsentinel/hdsentinel-email-alert --test-mail
+```
+
+The script reads `/etc/hdsentinel/email.conf` (override with `HDSENTINEL_EMAIL_CONF`) and delivers
+a test mail to the recipients in `smtp.to`. On success it prints `测试邮件已发送 至: ...`; on
+failure it prints the reason. Common failures:
+
+- `SMTP 配置不完整 (smtp.host / smtp.port / smtp.from 必填)` — settings are missing, fill them in;
+- `curl: (67) Access denied` — wrong username/password, or auth is required but `smtp.user` is empty;
+- `curl: (60) SSL certificate problem` — self-signed certificate. Add `-k` temporarily for testing;
+  configure a trusted CA for production;
+- Timeout or `Connection refused` — check `host`/`port` and firewall rules.
 
 ### Configuration reference
 
@@ -210,8 +232,8 @@ The timer fires every 15 min; the service is a oneshot that runs the script.
 ### Troubleshooting
 
 - **`错误: 未安装 curl`** — install `curl`; the script needs it for SMTP.
-- **No mail, no error** — check `smtp.to` is set, and that `email.conf` exists (the script falls back
-  to defaults otherwise, which may point at `root@localhost`).
+- **No mail, no error** — check `smtp.to` is set, and that `email.conf` exists (if SMTP settings are
+  missing, the script prints a clear error telling you to edit `/etc/hdsentinel/email.conf`).
 - **Mail not arriving** — run the script manually with `sudo` to see the `curl` exit code, and check
   `journalctl -u hdsentinel-email.service` or the cron mail spool.
 - **Duplicate mails** — you have both schedulers enabled (see above).
