@@ -7,5 +7,5 @@ SHELL=/bin/sh
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # 输出已重定向到日志文件, 不再由 cron 发信
 MAILTO=""
-# 日志会持续增长, 建议按需配置 logrotate
+# 日志轮转由随包提供的 /etc/logrotate.d/hdsentinel-email 处理(copytruncate, 不中断写入)
 */15 * * * * root /opt/hdsentinel/hdsentinel-email-alert >> /var/log/hdsentinel-email.log 2>&1

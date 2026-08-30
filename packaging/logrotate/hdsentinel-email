@@ -1,0 +1,9 @@
+/var/log/hdsentinel-email.log {
+    missingok
+    notifempty
+    size 1M
+    rotate 4
+    compress
+    delaycompress
+    copytruncate
+}
