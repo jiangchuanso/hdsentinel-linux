@@ -33,6 +33,7 @@ scripts/build-packages.sh          用 fpm 生成 deb/rpm
 packaging/email/                   Bash 邮件告警脚本(依赖 curl, SMTP) + 配置示例
 packaging/wrapper/                 /usr/bin/hdsentinel 包装器
 packaging/cron/                    cron.d 定时任务(每 15 分钟, 以 root 运行)
+packaging/logrotate/               告警日志的 logrotate 规则
 .github/workflows/build-packages.yml   CI 多架构构建 + 发 Release
 ```
 
@@ -190,7 +191,9 @@ MAILTO=""
 */15 * * * * root /opt/hdsentinel/hdsentinel-email-alert >> /var/log/hdsentinel-email.log 2>&1
 ```
 
-cron 输出已重定向到 `/var/log/hdsentinel-email.log`（会持续增长，建议按需配置 logrotate）。
+cron 输出已重定向到 `/var/log/hdsentinel-email.log`。本包已随附 logrotate 规则
+`/etc/logrotate.d/hdsentinel-email`（满 1MB 轮转、保留 4 个压缩副本、用 `copytruncate` 不中断
+cron 正在写入的文件句柄），由 `/etc/cron.daily/logrotate` 每天执行。
 `PATH` 显式声明是因为 cron 的默认 PATH 很窄，需确保能找到 `curl`。要改间隔就改 `*/15`（或注释该行停用）。
 
 ### 告警判定与冷却

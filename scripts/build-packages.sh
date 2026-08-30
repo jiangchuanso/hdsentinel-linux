@@ -22,7 +22,7 @@ build_one() {
 
   local stage; stage="$(mktemp -d)"
   mkdir -p "$stage/opt/hdsentinel" "$stage/usr/bin" "$stage/etc/hdsentinel" \
-           "$stage/etc/cron.d"
+           "$stage/etc/cron.d" "$stage/etc/logrotate.d"
 
   # 1) 提取对应架构的 hdsentinel 可执行文件
   local bin="$stage/opt/hdsentinel/hdsentinel"
@@ -71,6 +71,9 @@ build_one() {
   # 4) cron.d(每 15 分钟以 root 运行告警脚本)
   cp "$ROOT/packaging/cron/hdsentinel-email" "$stage/etc/cron.d/hdsentinel-email"
 
+  # 5) logrotate(轮转 /var/log/hdsentinel-email.log; copytruncate 不中断 cron 写入)
+  cp "$ROOT/packaging/logrotate/hdsentinel-email" "$stage/etc/logrotate.d/hdsentinel-email"
+
   local common=(
     -s dir -C "$stage"
     -n hdsentinel -v "$PKG_VER" --iteration "${iter:-$PKG_ITER}"
@@ -79,7 +82,7 @@ build_one() {
     --vendor "H.D.S. Hungary" --license "Freeware (HD Sentinel © H.D.S. Hungary)"
     --url "https://www.hdsentinel.com"
     --category "utils" --provides hdsentinel --provides hdsentinel-email-alert
-    --depends curl --rpm-os linux
+    --depends curl --depends logrotate --rpm-os linux
   )
 
   echo "    -> deb ($debarch, iter ${iter:-$PKG_ITER})"
@@ -102,7 +105,7 @@ if [[ $# -gt 0 ]]; then
     while IFS=$'\t' read -r arch src url ext deb rpm iter desc; do
       arch="${arch%$'\r'}"; src="${src%$'\r'}"; url="${url%$'\r'}"; ext="${ext%$'\r'}"
       deb="${deb%$'\r'}"; rpm="${rpm%$'\r'}"; iter="${iter%$'\r'}"; desc="${desc%$'\r'}"
-      [[ "$arch" == "ARCH" || -z "$arch" ]] && continue
+      [[ "$arch" == "ARCH" || -z "$arch" || "$arch" == \#* ]] && continue
       if [[ "$arch" == "$want" ]]; then
         build_one "$arch" "$src" "$ext" "$deb" "$rpm" "$iter" "$desc"; found=1
       fi
@@ -113,7 +116,7 @@ else
   while IFS=$'\t' read -r arch src url ext deb rpm iter desc; do
     arch="${arch%$'\r'}"; src="${src%$'\r'}"; url="${url%$'\r'}"; ext="${ext%$'\r'}"
     deb="${deb%$'\r'}"; rpm="${rpm%$'\r'}"; iter="${iter%$'\r'}"; desc="${desc%$'\r'}"
-    [[ "$arch" == "ARCH" || -z "$arch" ]] && continue
+    [[ "$arch" == "ARCH" || -z "$arch" || "$arch" == \#* ]] && continue
     build_one "$arch" "$src" "$ext" "$deb" "$rpm" "$iter" "$desc"
   done < "$MANIFEST"
 fi

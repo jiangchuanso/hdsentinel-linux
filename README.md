@@ -36,6 +36,7 @@ scripts/build-packages.sh          generate deb/rpm with fpm
 packaging/email/                   Bash e-mail alert script (requires curl, SMTP) + config example
 packaging/wrapper/                 /usr/bin/hdsentinel wrapper
 packaging/cron/                    cron.d schedule (every 15 min, runs as root)
+packaging/logrotate/               logrotate rule for the alert log
 .github/workflows/build-packages.yml   CI multi-arch build + Release
 ```
 
@@ -204,8 +205,10 @@ MAILTO=""
 */15 * * * * root /opt/hdsentinel/hdsentinel-email-alert >> /var/log/hdsentinel-email.log 2>&1
 ```
 
-Output goes to `/var/log/hdsentinel-email.log` (it grows over time — add a logrotate rule if you
-care). `PATH` is declared explicitly because cron's default PATH is very narrow and must find `curl`.
+Output goes to `/var/log/hdsentinel-email.log`. A logrotate rule is **shipped with the package** at
+`/etc/logrotate.d/hdsentinel-email` (rotates at 1 MB, keeps 4 compressed copies, `copytruncate` so
+cron's open file handle keeps writing to the same file) and runs daily via `/etc/cron.daily/logrotate`.
+`PATH` is declared explicitly because cron's default PATH is very narrow and must find `curl`.
 To change the interval, edit the `*/15` field (or comment the line to disable).
 
 ### Alerting & cooldown
