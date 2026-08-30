@@ -33,7 +33,7 @@ binaries.manifest                  arch → source file mapping
 binaries/                          binaries downloaded from the official source at build time (.gitignore'd)
 scripts/download-binaries.sh       fetch binaries from the official site (if missing)
 scripts/build-packages.sh          generate deb/rpm with fpm
-packaging/email/                   Bash e-mail alert script (requires curl) + config example
+packaging/email/                   Bash e-mail alert script (requires curl, SMTP) + config example
 packaging/wrapper/                 /usr/bin/hdsentinel wrapper
 packaging/systemd/                 e-mail alert service + timer
 packaging/cron/                    cron.d fallback config
@@ -71,16 +71,17 @@ sudoeditor /etc/hdsentinel/email.conf
 # 3. Send a test mail through the alert service itself (see "Sending a test mail")
 sudo /opt/hdsentinel/hdsentinel-email-alert --test-mail
 
-# 4. Make sure the state directory exists (for the cooldown signature)
-sudo mkdir -p /var/lib/hdsentinel
-
-# 5. Test a run manually — prints what it would do, and actually sends mail if a
+# 4. Test a run manually — prints what it would do, and actually sends mail if a
 #    threshold is breached (or if mode=daily)
 sudo /opt/hdsentinel/hdsentinel-email-alert
 
-# 6. Enable the scheduler (systemd recommended)
+# 5. Enable the scheduler (systemd recommended)
 sudo systemctl enable --now hdsentinel-email.timer
 ```
+
+> Under systemd the cooldown state directory `/var/lib/hdsentinel` is created automatically by
+> `StateDirectory=` in the service unit; when triggered from cron the script does its own
+> `mkdir -p`, so no manual step is needed either way.
 
 If SMTP settings are missing or incomplete, the script prints a clear error telling you to edit
 `/etc/hdsentinel/email.conf`; it does **not** send anything until valid SMTP is configured.
@@ -146,6 +147,12 @@ highest_temp_max = 65    # alert when any disk Highest Temp > this (℃)
 cooldown_minutes = 60
 # State file storing the last alert signature + time (for cooldown)
 state_file = /var/lib/hdsentinel/email-alert-state.json
+# Mail body format:
+#   text = plain-text report (default)
+#   html = run "hdsentinel -html -r <tmpfile>" and use that HTML report as the mail body
+#          (same as the official script). Thresholds are still parsed from the stdout text report;
+#          this only changes the mail body.
+report_format = text
 
 [hdsentinel]
 # Path to the hdsentinel binary, and any extra args.
@@ -210,8 +217,14 @@ The timer fires every 15 min; the service is a oneshot that runs the script.
 `/etc/cron.d/hdsentinel-email` is installed by the package and runs as root every 15 min:
 
 ```cron
-*/15 * * * * root /opt/hdsentinel/hdsentinel-email-alert
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=""
+*/15 * * * * root /opt/hdsentinel/hdsentinel-email-alert >> /var/log/hdsentinel-email.log 2>&1
 ```
+
+Output goes to `/var/log/hdsentinel-email.log` (it grows over time — add a logrotate rule if you
+care). `PATH` is declared explicitly because cron's default PATH is very narrow and must find `curl`.
 
 > Only keep **one** scheduler. If you enable the systemd timer, comment out / delete the cron entry
 > first, otherwise `daily` mode will send duplicate mails (in `alert` mode the cooldown suppresses
@@ -235,7 +248,7 @@ The timer fires every 15 min; the service is a oneshot that runs the script.
 - **No mail, no error** — check `smtp.to` is set, and that `email.conf` exists (if SMTP settings are
   missing, the script prints a clear error telling you to edit `/etc/hdsentinel/email.conf`).
 - **Mail not arriving** — run the script manually with `sudo` to see the `curl` exit code, and check
-  `journalctl -u hdsentinel-email.service` or the cron mail spool.
+  `journalctl -u hdsentinel-email.service` or `/var/log/hdsentinel-email.log`.
 - **Duplicate mails** — you have both schedulers enabled (see above).
 - Non-ASCII subjects are RFC 2047 encoded (`=?UTF-8?B?…?=`) automatically; bodies are `UTF-8 / 8bit`.
 

@@ -35,9 +35,15 @@ set_defaults() {
     [alert.highest_temp_max]=65
     [alert.cooldown_minutes]=60
     [alert.state_file]=$DEFAULT_STATE_FILE
+    [alert.report_format]=text
     [hdsentinel.path]=/opt/hdsentinel/hdsentinel
     [hdsentinel.extra_args]=""
   )
+}
+
+# 生成 HTML 报告时使用的临时目录(脚本退出时清理)
+cleanup() {
+  [[ -n "${HTML_TMPDIR:-}" ]] && rm -rf "$HTML_TMPDIR"
 }
 
 parse_conf() {
@@ -163,7 +169,16 @@ build_summary() {
     printf '  • %s (%s): %s 当前 %s，阈值 %s\n' \
       "${VIO_DEV[$i]}" "${VIO_MODEL[$i]}" "${VIO_METRIC[$i]}" "${VIO_VALUE[$i]}" "${VIO_THR[$i]}"
   done
-  printf '\n完整报告：\n%s' "$REPORT"
+  if [[ -n "${HTML_BODY:-}" ]]; then
+    printf '\n完整报告见下方。'
+  else
+    printf '\n完整报告：\n%s' "$REPORT"
+  fi
+}
+
+# 纯文本摘要嵌入 HTML 邮件时转义特殊字符
+html_escape() {
+  sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
 }
 
 # ---------------------------------------------------------------- 告警冷却 ---
@@ -214,6 +229,7 @@ cooldown_check() {
 }
 
 # ---------------------------------------------------------------- 发送邮件 ---
+# 邮件报文的 RFC 头部由本脚本构造(curl 不做 RFC 2047, 主题需手工编码)。
 # 依赖 curl: smtp:// 明文 / STARTTLS(--ssl-reqd), smtps:// SMTPS(465)。
 # 主题含非 ASCII(中文)时按 RFC 2047 编码为 =?UTF-8?B?...?=。
 
@@ -237,7 +253,7 @@ bare_addr() {
   fi
 }
 
-send_mail() {  # send_mail <subject> <body>
+send_mail() {  # send_mail <subject> <body> [content-type]
   local subject="$1" body="$2"
   local host port from to user pass scheme
   host="${CFG[smtp.host]:-}"
@@ -274,7 +290,17 @@ send_mail() {  # send_mail <subject> <body>
     ssl_opt=(--ssl-reqd)
   fi
 
-  # 构造带 RFC 头部的邮件正文 (curl 不做 RFC 2047, 主题需手工编码)
+  # 正文类型: 未显式指定时按 alert.report_format 决定 (html = HDSentinel HTML 报告)
+  local ctype="${3:-}"
+  if [[ -z "$ctype" ]]; then
+    if [[ "${REPORT_FORMAT:-text}" == html ]]; then
+      ctype="text/html; charset=UTF-8"
+    else
+      ctype="text/plain; charset=UTF-8"
+    fi
+  fi
+
+  # 构造带 RFC 头部的邮件报文 (curl 不做 RFC 2047, 主题需手工编码)
   local mailfile
   mailfile="$(mktemp)" || return 1
   {
@@ -283,7 +309,7 @@ send_mail() {  # send_mail <subject> <body>
     printf 'Subject: %s\n' "$(rfc2047_encode "$subject")"
     printf 'Date: %s\n' "$(date -u -R)"
     printf 'MIME-Version: 1.0\n'
-    printf 'Content-Type: text/plain; charset=UTF-8\n'
+    printf 'Content-Type: %s\n' "$ctype"
     printf 'Content-Transfer-Encoding: 8bit\n'
     printf '\n%s\n' "$body"
   } > "$mailfile"
@@ -323,7 +349,7 @@ send_test_mail() {
 
 SMTP 配置验证通过。
 时间: $(date -u -R)"
-  if send_mail "$subject" "$body"; then
+  if send_mail "$subject" "$body" "text/plain; charset=UTF-8"; then
     echo "测试邮件已发送${to:+ 至: $to}"
     return 0
   else
@@ -339,6 +365,8 @@ main() {
   set_defaults
   parse_conf "$conf"
 
+  trap cleanup EXIT
+
   if [[ "${1:-}" == "--test-mail" ]]; then
     send_test_mail
     return $?
@@ -347,12 +375,28 @@ main() {
   local path extra_args
   path="${CFG[hdsentinel.path]:-/opt/hdsentinel/hdsentinel}"
   extra_args="${CFG[hdsentinel.extra_args]:-}"
+  REPORT_FORMAT="${CFG[alert.report_format]:-text}"; REPORT_FORMAT="${REPORT_FORMAT,,}"
+
+  # report_format=html: 额外生成 HTML 报告文件(与官方 GenerateHDReport.sh 的 "-html -r" 一致),
+  # 邮件正文改用该 HTML; 阈值解析仍基于 stdout 的文本报告。
+  HTML_BODY=""
+  HTML_TMPDIR=""
+  local -a rep_args=() extra_arr=()
+  if [[ "$REPORT_FORMAT" == html ]]; then
+    HTML_TMPDIR="$(mktemp -d)" || return 1
+    HTML_REPORT_FILE="$HTML_TMPDIR/HDSentinelReport.html"
+    rep_args=(-html -r "$HTML_REPORT_FILE")
+  fi
+  [[ -n "$extra_args" ]] && read -ra extra_arr <<<"$extra_args"
 
   # 与 python subprocess 一致: 超时 120s, stderr 并入 stdout
-  REPORT="$(timeout 120 "$path" $extra_args 2>&1 || true)"
+  REPORT="$(timeout 120 "$path" "${rep_args[@]}" "${extra_arr[@]}" 2>&1 || true)"
   if [[ -z "$REPORT" ]]; then
     echo "错误: hdsentinel 无输出 ($path)" >&2
     return 1
+  fi
+  if [[ -n "${HTML_REPORT_FILE:-}" && -s "$HTML_REPORT_FILE" ]]; then
+    HTML_BODY="$(<"$HTML_REPORT_FILE")"
   fi
 
   DEV_DEVICE=() DEV_MODEL=() DEV_TEMP=() DEV_HTEMP=() DEV_HEALTH=() DEV_PERF=()
@@ -371,14 +415,18 @@ main() {
   STATE_FILE="${CFG[alert.state_file]:-$DEFAULT_STATE_FILE}"
 
   local mode="${CFG[alert.mode]:-alert}"
-  local subject body prefix="${CFG[smtp.subject_prefix]:-[HD Sentinel Alert]}"
+  local subject body ctype prefix="${CFG[smtp.subject_prefix]:-[HD Sentinel Alert]}"
 
   if [[ "$mode" == daily ]]; then
-    body="HD Sentinel 每日状态报告
-
-$REPORT"
     subject="$prefix 每日状态报告"
-    if send_mail "$subject" "$body"; then
+    if [[ -n "$HTML_BODY" ]]; then
+      body="$HTML_BODY"; ctype="text/html; charset=UTF-8"
+    else
+      body="HD Sentinel 每日状态报告
+
+$REPORT"; ctype="text/plain; charset=UTF-8"
+    fi
+    if send_mail "$subject" "$body" "$ctype"; then
       echo "每日报告已发送"
     else
       echo "每日报告发送失败"
@@ -397,8 +445,14 @@ $REPORT"
   fi
 
   subject="$prefix ${#VIO_DEV[@]} 项磁盘指标异常"
-  body="$(build_summary)"
-  if send_mail "$subject" "$body"; then
+  if [[ -n "$HTML_BODY" ]]; then
+    body="$(printf '<pre>%s</pre>\n<hr>\n%s' "$(build_summary | html_escape)" "$HTML_BODY")"
+    ctype="text/html; charset=UTF-8"
+  else
+    body="$(build_summary)"
+    ctype="text/plain; charset=UTF-8"
+  fi
+  if send_mail "$subject" "$body" "$ctype"; then
     echo "告警已发送：${#VIO_DEV[@]} 项指标异常"
   else
     echo "告警发送失败"

@@ -1,4 +1,13 @@
 # /etc/cron.d/hdsentinel-email
 # 每 15 分钟以 root 身份运行 HD Sentinel 邮件告警(兼容无 systemd 的系统)。
 # 需先配置 /etc/hdsentinel/email.conf 才会真正发信。
-*/15 * * * * root /opt/hdsentinel/hdsentinel-email-alert
+#
+# 注意: 启用 systemd timer (hdsentinel-email.timer) 后请注释掉下面的条目,
+#       否则两种定时会重复触发。
+# 注意: cron 的默认 PATH 很窄, 这里显式声明, 确保 curl 等命令都能找到。
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# 输出已重定向到日志文件, 不再由 cron 发信
+MAILTO=""
+# 日志会持续增长, 建议按需配置 logrotate
+*/15 * * * * root /opt/hdsentinel/hdsentinel-email-alert >> /var/log/hdsentinel-email.log 2>&1

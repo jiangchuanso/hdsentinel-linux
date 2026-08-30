@@ -37,6 +37,11 @@ highest_temp_max = 65
 cooldown_minutes = 60
 # 告警状态文件(记录上次告警签名和时间)
 state_file = /var/lib/hdsentinel/email-alert-state.json
+# 邮件正文格式(与官方 GenerateHDReport.sh 对齐)
+#   text = 纯文本报告(默认)
+#   html = 执行 "hdsentinel -html -r <临时文件>", 把生成的 HTML 报告作为邮件正文
+#          注意: 阈值解析仍基于 stdout 的文本报告, HTML 只影响邮件正文
+report_format = text
 
 [hdsentinel]
 # hdsentinel 二进制路径
