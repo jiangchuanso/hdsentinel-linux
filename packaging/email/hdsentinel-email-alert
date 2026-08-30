@@ -26,9 +26,10 @@ declare -A CFG
 
 # 注意: 这里不内置任何 SMTP 默认配置(smtp.host/port/user/password/from/to 等),
 # 全部必须来自配置文件 email.conf, 否则 send_mail 会明确报错并提示编辑配置文件。
+# 注意: 早期版本的 alert.mode=daily(每次运行都发完整报告)已移除, 现在只在指标超阈值时发信;
+#       配置文件里残留的 mode 键会被忽略。
 set_defaults() {
   CFG=(
-    [alert.mode]=alert
     [alert.health_min]=60
     [alert.performance_min]=60
     [alert.temp_max]=55
@@ -414,25 +415,7 @@ main() {
   COOLDOWN="${CFG[alert.cooldown_minutes]:-60}"
   STATE_FILE="${CFG[alert.state_file]:-$DEFAULT_STATE_FILE}"
 
-  local mode="${CFG[alert.mode]:-alert}"
   local subject body ctype prefix="${CFG[smtp.subject_prefix]:-[HD Sentinel Alert]}"
-
-  if [[ "$mode" == daily ]]; then
-    subject="$prefix 每日状态报告"
-    if [[ -n "$HTML_BODY" ]]; then
-      body="$HTML_BODY"; ctype="text/html; charset=UTF-8"
-    else
-      body="HD Sentinel 每日状态报告
-
-$REPORT"; ctype="text/plain; charset=UTF-8"
-    fi
-    if send_mail "$subject" "$body" "$ctype"; then
-      echo "每日报告已发送"
-    else
-      echo "每日报告发送失败"
-    fi
-    return 0
-  fi
 
   evaluate
   if (( ${#VIO_DEV[@]} == 0 )); then

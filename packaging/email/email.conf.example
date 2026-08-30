@@ -23,8 +23,8 @@ to = admin@example.com, oncall@example.com
 subject_prefix = [HD Sentinel Alert]
 
 [alert]
-# 模式: alert = 仅超阈值时发送邮件; daily = 每次运行都发送完整报告
-mode = alert
+# 只在任一指标超阈值时发送告警邮件; 全部正常则不发信。
+# (早期版本的 mode = daily 「每次运行都发完整报告」已移除, 残留的 mode 键会被忽略)
 # 任一磁盘健康度低于该值(%)触发告警
 health_min = 60
 # 任一磁盘性能低于该值(%)触发告警

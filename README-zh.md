@@ -32,8 +32,7 @@ scripts/download-binaries.sh       从官网抓取二进制(若不存在)
 scripts/build-packages.sh          用 fpm 生成 deb/rpm
 packaging/email/                   Bash 邮件告警脚本(依赖 curl, SMTP) + 配置示例
 packaging/wrapper/                 /usr/bin/hdsentinel 包装器
-packaging/systemd/                 email 告警 service + timer
-packaging/cron/                    cron.d 兜底配置
+packaging/cron/                    cron.d 定时任务(每 15 分钟, 以 root 运行)
 .github/workflows/build-packages.yml   CI 多架构构建 + 发 Release
 ```
 
@@ -45,14 +44,8 @@ packaging/cron/                    cron.d 兜底配置
   完整报告中的 **健康度 / 性能 / 温度 / 历史最高温度**，任一指标超阈值时经 SMTP 发信。
   支持同一告警冷却（默认 60 分钟），避免持续异常时邮件轰炸。
 - `/etc/hdsentinel/email.conf`：SMTP 邮件配置（安装时默认生成，编辑后 `chmod 600`）。
-- 两种触发方式：
-  - **systemd**（推荐）：`systemctl enable --now hdsentinel-email.timer`（每 15 分钟检查一次）
-  - **cron**：`/etc/cron.d/hdsentinel-email` 已随包安装（每 15 分钟 root 运行）
-
-> 两种定时方式**只保留一种**：启用 systemd timer 后请删除/注释
-> `/etc/cron.d/hdsentinel-email`，否则会重复触发（alert 模式靠 cooldown 兜底，
-> daily 模式会重复发信）。
-- 模式：`alert`（仅超阈值发信）或 `daily`（每次运行都发完整报告），见配置 `alert.mode`。
+- 由 **cron** 每 15 分钟以 root 触发：`/etc/cron.d/hdsentinel-email` 已随包安装，可编辑改间隔或停用。
+- 只在**任一指标超阈值**时发信，全部正常则静默不发送。
 
 ### 快速上手
 
@@ -66,19 +59,18 @@ sudoeditor /etc/hdsentinel/email.conf
 # 3. 调用服务发测试邮件，验证 SMTP 配置可用（详见下方"发送测试邮件"）
 sudo /opt/hdsentinel/hdsentinel-email-alert --test-mail
 
-# 4. 手动试运行——会打印执行情况；若有指标超阈值（或 mode=daily）则真的发信
+# 4. 手动试运行——会打印执行情况；若有指标超阈值则真的发信
 sudo /opt/hdsentinel/hdsentinel-email-alert
 
-# 5. 启用定时任务（推荐 systemd）
-sudo systemctl enable --now hdsentinel-email.timer
+# 5. 定时任务随包安装, 确认 cron 条目存在即可
+ls -l /etc/cron.d/hdsentinel-email
 ```
 
-> systemd 下冷却状态目录 `/var/lib/hdsentinel` 由 service 的 `StateDirectory=` 自动创建；
-> 用 cron 触发时脚本会自行 `mkdir -p`，无需手工建目录。
+> 冷却状态目录 `/var/lib/hdsentinel` 由脚本通过 `mkdir -p` 自动创建，无需手工建目录。
 
 默认安装后，SMTP 配置缺失/不完整时脚本会明确报错提示编辑 `/etc/hdsentinel/email.conf`；
 配置好有效 SMTP 之前**不会**发任何邮件。
-手动运行会打印其中之一：`无告警 / 告警已发送 / 每日报告已发送 / 同一告警冷却中`。
+手动运行会打印其中之一：`无告警 / 告警已发送 / 同一告警冷却中`。
 
 ### 发送测试邮件
 
@@ -125,8 +117,8 @@ to = admin@example.com, oncall@example.com
 subject_prefix = [HD Sentinel Alert]
 
 [alert]
-# mode: alert = 仅超阈值发信; daily = 每次运行都发完整报告
-mode = alert
+# 只在任一指标超阈值时发告警信; 全部正常则不发信。
+# (早期版本的 mode = daily「每次运行都发完整报告」已移除, 残留的 mode 键会被忽略)
 # 各磁盘阈值:
 health_min = 60          # 任一磁盘健康度低于此值(%)告警
 performance_min = 60     # 任一磁盘性能低于此值(%)告警
@@ -189,19 +181,7 @@ use_tls = false
 
 ### 定时触发
 
-**systemd（推荐）**
-
-```bash
-sudo systemctl enable --now hdsentinel-email.timer   # 每 15 分钟一次, 开机 2 分钟后首跑
-systemctl list-timers hdsentinel-email.timer         # 确认已启用
-journalctl -u hdsentinel-email.service              # 查看运行记录
-```
-
-timer 每 15 分钟触发一次，service 为 oneshot 执行该脚本。
-
-**cron（无 systemd 的系统）**
-
-`/etc/cron.d/hdsentinel-email` 随包安装，每 15 分钟以 root 运行：
+包内自带 `/etc/cron.d/hdsentinel-email`，每 **15 分钟以 root** 运行告警脚本：
 
 ```cron
 SHELL=/bin/sh
@@ -211,17 +191,13 @@ MAILTO=""
 ```
 
 cron 输出已重定向到 `/var/log/hdsentinel-email.log`（会持续增长，建议按需配置 logrotate）。
-`PATH` 显式声明是因为 cron 的默认 PATH 很窄，需确保能找到 `curl`。
+`PATH` 显式声明是因为 cron 的默认 PATH 很窄，需确保能找到 `curl`。要改间隔就改 `*/15`（或注释该行停用）。
 
-> 两种定时方式**只保留一种**。启用 systemd timer 后请先注释/删除 cron 条目，
-> 否则 `daily` 模式会重复发信（alert 模式靠冷却兜底不会重复）。
+### 告警判定与冷却
 
-### 模式与冷却
-
-- **`alert`**（默认）：脚本逐盘比对健康度/性能/温度/历史最高温度与阈值，若有超阈值则发**一封**
-  邮件列出所有异常；全部正常则不发信。
-- **`daily`**：每次运行无论阈值如何都发送完整 `hdsentinel` 报告，适合做定期"心跳"汇报。
-- **冷却**：`alert` 模式下，脚本对异常集合（按 `device|model|metric|value` 排序后
+- 脚本逐盘比对健康度/性能/温度/历史最高温度与阈值，若有超阈值则发**一封**邮件列出所有异常；
+  全部正常则不发信。
+- **冷却**：脚本对异常集合（按 `device|model|metric|value` 排序后
   sha256 取前 16 位十六进制）生成签名。同一签名在 `cooldown_minutes`（默认 60）分钟内被抑制；
   不同的异常则立即发送。签名与时间戳保存在 `state_file`
   （`/var/lib/hdsentinel/email-alert-state.json`）。
@@ -231,9 +207,7 @@ cron 输出已重定向到 `/var/log/hdsentinel-email.log`（会持续增长，�
 - **`错误: 未安装 curl`** —— 安装 `curl`，脚本发信用它。
 - **没发信也没报错** —— 检查 `smtp.to` 是否配置，以及 `email.conf` 是否存在
   （SMTP 配置缺失时脚本会明确报错，并提示编辑 `/etc/hdsentinel/email.conf`）。
-- **邮件收不到** —— 用 `sudo` 手动运行脚本看 `curl` 退出码，并检查
-  `journalctl -u hdsentinel-email.service` 或 `/var/log/hdsentinel-email.log`。
-- **重复收到邮件** —— 两种定时方式同时启用（见上文）。
+- **邮件收不到** —— 用 `sudo` 手动运行脚本看 `curl` 退出码，并检查 `/var/log/hdsentinel-email.log`。
 - 主题中的非 ASCII 字符会自动按 RFC 2047 编码为 `=?UTF-8?B?…?=`；正文为 `UTF-8 / 8bit`。
 
 ## 本地构建（Linux）
@@ -263,5 +237,5 @@ ls dist/
   **版权归 H.D.S. Hungary（HD Sentinel）所有**。本仓库**不包含、也不重新分发**这些文件——
   构建时仅从官方源地址 `https://www.hdsentinel.com/hdslin/` 临时下载并打进包中。
   将构建产物（`.deb`/`.rpm`）发布到公开渠道前，请确认 HD Sentinel 的许可条款允许再分发其二进制。
-- **本仓库的打包脚本、systemd/cron 单元、邮件告警配置与文档**（不包含上述二进制）：
+- **本仓库的打包脚本、cron 单元、邮件告警配置与文档**（不包含上述二进制）：
   采用 MIT 许可，见 [LICENSE](LICENSE)。
