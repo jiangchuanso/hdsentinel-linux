@@ -220,13 +220,13 @@ cooldown_check() {
       elapsed=$(( (now - last_epoch) / 60 ))
       if [[ "$last_sig" == "$SIG" ]] && (( elapsed < COOLDOWN )); then
         echo "同一告警冷却中 ($elapsed/$COOLDOWN min)，跳过发送"
-        update_state
         return 0                            # 冷却中, 跳过
+        # 注意: 此处不刷新 last_alert_time, 否则冷却窗口会被无限重置,
+        # 持续存在的同一告警将永远不会再次发送
       fi
     fi
   fi
-  update_state
-  return 1
+  return 1                                  # 需要发送; 状态在发送成功后由调用方写入
 }
 
 # ---------------------------------------------------------------- 发送邮件 ---
@@ -436,6 +436,7 @@ main() {
     ctype="text/plain; charset=UTF-8"
   fi
   if send_mail "$subject" "$body" "$ctype"; then
+    update_state                             # 仅在发送成功后记录, 失败时下轮重试
     echo "告警已发送：${#VIO_DEV[@]} 项指标异常"
   else
     echo "告警发送失败"

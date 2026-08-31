@@ -30,7 +30,7 @@ fetch() {
 
 # 读取 manifest 第 3 列(URL)逐个下载
 while IFS=$'\t' read -r arch src url ext deb rpm iter desc; do
-  [[ "$arch" == "ARCH" || -z "$arch" || -z "$url" ]] && continue
+  [[ "$arch" == "ARCH" || -z "$arch" || "$arch" == \#* || -z "$url" ]] && continue
   fetch "$url"
 done < "$MANIFEST"
 

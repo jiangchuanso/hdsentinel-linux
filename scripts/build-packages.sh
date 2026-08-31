@@ -105,7 +105,7 @@ if [[ $# -gt 0 ]]; then
     while IFS=$'\t' read -r arch src url ext deb rpm iter desc; do
       arch="${arch%$'\r'}"; src="${src%$'\r'}"; url="${url%$'\r'}"; ext="${ext%$'\r'}"
       deb="${deb%$'\r'}"; rpm="${rpm%$'\r'}"; iter="${iter%$'\r'}"; desc="${desc%$'\r'}"
-      [[ "$arch" == "ARCH" || -z "$arch" ]] && continue
+      [[ "$arch" == "ARCH" || -z "$arch" || "$arch" == \#* ]] && continue
       if [[ "$arch" == "$want" ]]; then
         build_one "$arch" "$src" "$ext" "$deb" "$rpm" "$iter" "$desc"; found=1
       fi
@@ -116,7 +116,7 @@ else
   while IFS=$'\t' read -r arch src url ext deb rpm iter desc; do
     arch="${arch%$'\r'}"; src="${src%$'\r'}"; url="${url%$'\r'}"; ext="${ext%$'\r'}"
     deb="${deb%$'\r'}"; rpm="${rpm%$'\r'}"; iter="${iter%$'\r'}"; desc="${desc%$'\r'}"
-    [[ "$arch" == "ARCH" || -z "$arch" ]] && continue
+    [[ "$arch" == "ARCH" || -z "$arch" || "$arch" == \#* ]] && continue
     build_one "$arch" "$src" "$ext" "$deb" "$rpm" "$iter" "$desc"
   done < "$MANIFEST"
 fi
