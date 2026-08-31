@@ -5,7 +5,7 @@
 # 注意: cron 的默认 PATH 很窄, 这里显式声明, 确保 curl 等命令都能找到。
 SHELL=/bin/sh
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-# 输出已重定向到日志文件, 不再由 cron 发信
+# 输出已重定向到日志文件; MAILTO="" 显式关闭 cron 自带的邮件汇报(告警收件人由 email.conf 的 smtp.to 决定)
 MAILTO=""
 # 日志轮转由随包提供的 /etc/logrotate.d/hdsentinel-email 处理(copytruncate, 不中断写入)
 */15 * * * * root /opt/hdsentinel/hdsentinel-email-alert >> /var/log/hdsentinel-email.log 2>&1
