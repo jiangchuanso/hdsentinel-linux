@@ -426,7 +426,7 @@ main() {
   local path extra_args
   path="${CFG[hdsentinel.path]:-/opt/hdsentinel/hdsentinel}"
   extra_args="${CFG[hdsentinel.extra_args]:-}"
-  REPORT_FORMAT="${CFG[alert.report_format]:-html}"; REPORT_FORMAT="${REPORT_FORMAT,,}"
+  REPORT_FORMAT="${CFG[alert.report_format]:-text}"; REPORT_FORMAT="${REPORT_FORMAT,,}"
 
   # 两遍流程:
   #   第一遍: 始终跑纯文本报告(供阈值解析), 不带 -html, 也不带 -onlydevs(读取所有盘)。
