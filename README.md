@@ -123,6 +123,10 @@ password =
 use_ssl = false
 use_tls = false
 # Sender / recipients. `to` accepts a comma-separated list.
+# from_name: optional display name; the mail header becomes "Name <from>".
+#            Leave empty to use `from` as-is (can also be "Name <addr>" inline).
+#            The envelope sender (MAIL FROM) always uses the bare address only.
+from_name =
 from = hdsentinel@yourhost.local
 to = admin@example.com, oncall@example.com
 subject_prefix = [HD Sentinel Alert]
@@ -140,12 +144,16 @@ highest_temp_max = 65    # alert when any disk Highest Temp > this (℃)
 cooldown_minutes = 60
 # State file storing the last alert signature + time (for cooldown)
 state_file = /var/lib/hdsentinel/email-alert-state.json
-# Mail body format:
-#   text = plain-text report (default)
-#   html = run "hdsentinel -html -r <tmpfile>" and use that HTML report as the mail body
-#          (same as the official script). Thresholds are still parsed from the stdout text report;
-#          this only changes the mail body.
-report_format = text
+# Mail body format (both generated natively by hdsentinel, both contain ONLY problem disks):
+#   text = "problem report": 1st pass runs plain-text to parse thresholds; 2nd pass re-runs
+#          hdsentinel with native `-onlydevs <problem disks>` and emits a plain-text report
+#          that contains ONLY the offending disks (same format as a full report).
+#   html  = "problem report" (default): 2nd pass re-runs with `-onlydevs <problem disks>
+#          -html -r <file>`, emitting an HTML report that contains ONLY the offending disks,
+#          with a short problem-disk summary prepended.
+#   Flow: 1st pass always plain-text (for threshold parsing); 2nd pass appends format-specific
+#         args (`-onlydevs` + optionally `-html -r`) to report only the problem disks.
+report_format = html
 
 [hdsentinel]
 # Path to the hdsentinel binary, and any extra args.
