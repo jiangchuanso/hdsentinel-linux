@@ -170,11 +170,58 @@ build_summary() {
     printf '  • %s (%s): %s 当前 %s，阈值 %s\n' \
       "${VIO_DEV[$i]}" "${VIO_MODEL[$i]}" "${VIO_METRIC[$i]}" "${VIO_VALUE[$i]}" "${VIO_THR[$i]}"
   done
-  if [[ -n "${HTML_BODY:-}" ]]; then
-    printf '\n完整报告见下方。'
-  else
-    printf '\n完整报告：\n%s' "$REPORT"
+}
+
+# 回退路径: 从完整文本报告 REPORT 中仅提取"有问题的盘"对应的磁盘块(按设备名匹配 VIO_DEV)。
+# 正常情况正文用原生 -onlydevs 生成的问题报告(native_problem_report);
+# 仅当原生开关不可用/无输出时才使用本函数。
+build_problem_report() {
+  local -a devs=("${VIO_DEV[@]}")
+  (( ${#devs[@]} == 0 )) && return 0
+  local block="" line d
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ -z "$line" ]]; then
+      if [[ -n "$block" ]]; then
+        for d in "${devs[@]}"; do
+          if [[ "$block" == *"HDD Device"*"$d"* ]]; then
+            printf '%s\n\n' "$block"
+            break
+          fi
+        done
+      fi
+      block=""
+    else
+      block+="$line"$'\n'
+    fi
+  done <<<"$REPORT"
+  if [[ -n "$block" ]]; then
+    for d in "${devs[@]}"; do
+      if [[ "$block" == *"HDD Device"*"$d"* ]]; then
+        printf '%s\n' "$block"
+        break
+      fi
+    done
   fi
+}
+
+# 去重并拼接为逗号分隔的设备列表(供 hdsentinel 原生 -onlydevs 使用)
+unique_devs() {
+  local -A seen=()
+  local d out=""
+  for d in "$@"; do
+    [[ -n "$d" ]] || continue
+    [[ -n "${seen[$d]:-}" ]] && continue
+    seen[$d]=1
+    out+="${out:+,}$d"
+  done
+  printf '%s' "$out"
+}
+
+# 借助 hdsentinel 原生 -onlydevs 只检测"有问题的盘", 其原生输出即为"问题报告"。
+# 由 hdsentinel 自身生成, 格式与完整报告完全一致, 只是只包含问题盘。
+native_problem_report() { # native_problem_report <hdsentinel路径> <设备CSV> [extra args...]
+  local prog="$1" devs="$2"; shift 2
+  timeout 120 "$prog" -onlydevs "$devs" "$@" 2>&1 || true
 }
 
 # 纯文本摘要嵌入 HTML 邮件时转义特殊字符
@@ -260,6 +307,7 @@ send_mail() {  # send_mail <subject> <body> [content-type]
   host="${CFG[smtp.host]:-}"
   port="${CFG[smtp.port]:-}"
   from="${CFG[smtp.from]:-}"
+  from_name="${CFG[smtp.from_name]:-}"
   to="${CFG[smtp.to]:-}"
   user="${CFG[smtp.user]:-}"
   pass="${CFG[smtp.password]:-}"
@@ -305,7 +353,9 @@ send_mail() {  # send_mail <subject> <body> [content-type]
   local mailfile
   mailfile="$(mktemp)" || return 1
   {
-    printf 'From: %s\n' "$from"
+    local from_header="$from"
+    [[ -n "$from_name" ]] && from_header="$from_name <$(bare_addr "$from")>"
+    printf 'From: %s\n' "$from_header"
     printf 'To: %s\n' "$to"
     printf 'Subject: %s\n' "$(rfc2047_encode "$subject")"
     printf 'Date: %s\n' "$(date -u -R)"
@@ -376,18 +426,14 @@ main() {
   local path extra_args
   path="${CFG[hdsentinel.path]:-/opt/hdsentinel/hdsentinel}"
   extra_args="${CFG[hdsentinel.extra_args]:-}"
-  REPORT_FORMAT="${CFG[alert.report_format]:-text}"; REPORT_FORMAT="${REPORT_FORMAT,,}"
+  REPORT_FORMAT="${CFG[alert.report_format]:-html}"; REPORT_FORMAT="${REPORT_FORMAT,,}"
 
-  # report_format=html: 额外生成 HTML 报告文件(与官方 GenerateHDReport.sh 的 "-html -r" 一致),
-  # 邮件正文改用该 HTML; 阈值解析仍基于 stdout 的文本报告。
-  HTML_BODY=""
-  HTML_TMPDIR=""
+  # 两遍流程:
+  #   第一遍: 始终跑纯文本报告(供阈值解析), 不带 -html, 也不带 -onlydevs(读取所有盘)。
+  #   第二遍: 按 report_format 追加参数, 仅检测问题盘(原生 -onlydevs);
+  #           text -> -onlydevs (纯文本问题报告); html -> -onlydevs -html -r (问题盘 HTML)。
+  #   两种格式最终都只含"有问题的盘"。
   local -a rep_args=() extra_arr=()
-  if [[ "$REPORT_FORMAT" == html ]]; then
-    HTML_TMPDIR="$(mktemp -d)" || return 1
-    HTML_REPORT_FILE="$HTML_TMPDIR/HDSentinelReport.html"
-    rep_args=(-html -r "$HTML_REPORT_FILE")
-  fi
   [[ -n "$extra_args" ]] && read -ra extra_arr <<<"$extra_args"
 
   # 与 python subprocess 一致: 超时 120s, stderr 并入 stdout
@@ -395,9 +441,6 @@ main() {
   if [[ -z "$REPORT" ]]; then
     echo "错误: hdsentinel 无输出 ($path)" >&2
     return 1
-  fi
-  if [[ -n "${HTML_REPORT_FILE:-}" && -s "$HTML_REPORT_FILE" ]]; then
-    HTML_BODY="$(<"$HTML_REPORT_FILE")"
   fi
 
   DEV_DEVICE=() DEV_MODEL=() DEV_TEMP=() DEV_HTEMP=() DEV_HEALTH=() DEV_PERF=()
@@ -428,11 +471,33 @@ main() {
   fi
 
   subject="$prefix ${#VIO_DEV[@]} 项磁盘指标异常"
-  if [[ -n "$HTML_BODY" ]]; then
-    body="$(printf '<pre>%s</pre>\n<hr>\n%s' "$(build_summary | html_escape)" "$HTML_BODY")"
+
+  # 第二遍: 按格式追加参数, 仅检测问题盘(原生 -onlydevs), 由 hdsentinel 生成"问题报告"。
+  #   text -> 纯文本问题报告( -onlydevs );
+  #   html  -> 问题盘 HTML 报告( -onlydevs -html -r <tmpfile> ), 顶部附问题盘摘要。
+  # html 原生调用失败则降级为 text 正文。
+  local detail="" devs_csv html_body=""
+  devs_csv="$(unique_devs "${VIO_DEV[@]}")"
+  if [[ -n "$devs_csv" ]]; then
+    if [[ "$REPORT_FORMAT" == html ]]; then
+      HTML_TMPDIR="$(mktemp -d)" || return 1
+      HTML_REPORT_FILE="$HTML_TMPDIR/HDSentinelReport.html"
+      timeout 120 "$path" -onlydevs "$devs_csv" -html -r "$HTML_REPORT_FILE" "${extra_arr[@]}" 2>&1 || true
+      [[ -s "$HTML_REPORT_FILE" ]] && html_body="$(<"$HTML_REPORT_FILE")"
+    else
+      detail="$(native_problem_report "$path" "$devs_csv" "${extra_arr[@]}")"
+    fi
+  fi
+  # 回退: text(或 html 降级)无原生输出时, 从完整报告中过滤问题盘
+  [[ -z "$detail" ]] && detail="$(build_problem_report)"
+
+  if [[ -n "$html_body" ]]; then
+    # html 模式: 问题盘 HTML 报告(原生 -onlydevs -html -r 生成, 仅含问题盘), 顶部附问题盘摘要
+    body="$(printf '<pre>%s</pre>\n<hr>\n%s' "$(build_summary | html_escape)" "$html_body")"
     ctype="text/html; charset=UTF-8"
   else
-    body="$(build_summary)"
+    # text 模式: 问题报告 —— 摘要 + 原生问题报告(-onlydevs 生成, 仅含问题盘)
+    body="$(printf '%s\n\n%s' "$(build_summary)" "$detail")"
     ctype="text/plain; charset=UTF-8"
   fi
   if send_mail "$subject" "$body" "$ctype"; then

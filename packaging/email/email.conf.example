@@ -18,6 +18,10 @@ password =
 use_ssl = false
 use_tls = false
 # 收发件人
+# from_name: 发件人显示名称(可选)。设置后邮件头 From 显示为 "名称 <from>";
+#            留空则直接使用 from(也可写成 "名称 <地址>" 形式内联显示名)。
+#            注意: 信封发件人(MAIL FROM)始终只取 from 中的裸邮箱地址, 与 from_name 无关。
+from_name =
 from = hdsentinel@yourhost.local
 to = admin@example.com, oncall@example.com
 subject_prefix = [HD Sentinel Alert]
@@ -30,18 +34,20 @@ health_min = 60
 # 任一磁盘性能低于该值(%)触发告警
 performance_min = 60
 # 任一磁盘当前温度高于该值(℃)触发告警
-temp_max = 55
+temp_max = 50
 # 任一磁盘历史最高温度高于该值(℃)触发告警
 highest_temp_max = 65
 # 同一告警冷却时间(分钟), 0 表示不冷却; 避免指标持续异常时邮件轰炸
 cooldown_minutes = 60
 # 告警状态文件(记录上次告警签名和时间)
 state_file = /var/lib/hdsentinel/email-alert-state.json
-# 邮件正文格式(与官方 GenerateHDReport.sh 对齐)
-#   text = 纯文本报告(默认)
-#   html = 执行 "hdsentinel -html -r <临时文件>", 把生成的 HTML 报告作为邮件正文
-#          注意: 阈值解析仍基于 stdout 的文本报告, HTML 只影响邮件正文
-report_format = text
+# 邮件正文格式(两种报告均借助 hdsentinel 原生能力生成, 都只含"有问题的盘")
+#   text = "问题报告": 第一遍纯文本解析阈值后, 第二遍用原生 -onlydevs 只检测问题盘,
+#          由 hdsentinel 自身生成纯文本报告, 仅含问题盘, 格式与完整报告一致
+#   html  = "问题报告"(默认): 同样第二遍用原生 -onlydevs -html -r 生成仅含问题盘的 HTML 报告,
+#          顶部附问题盘摘要
+#   说明: 两遍流程 —— 第一遍始终跑纯文本(供阈值解析), 第二遍按此处格式追加参数只报问题盘
+report_format = html
 
 [hdsentinel]
 # hdsentinel 二进制路径
