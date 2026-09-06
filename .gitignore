@@ -1,17 +1,49 @@
-# 提交/上传时忽略所有点文件与点目录
-# (保留 .github 工作流 与 .gitignore/.gitattributes 本身; .codebuddy 等也一并忽略)
+# ===== 以 . 开头的非必要文件 / 文件夹（必要项除外） =====
 .*
-!.github
 !.gitignore
 !.gitattributes
+!.github/
+!.dockerignore
+!.env.example
 
-# 构建时从官方源地址下载的二进制, 不纳入版本库(保留目录占位 .gitkeep)
-# 注意: 否定规则必须写在对应忽略规则之后才生效
+# ===== 测试 / 覆盖率产物 =====
+coverage/
+htmlcov/
+test-results/
+playwright-report/
+cypress/screenshots/
+cypress/videos/
+
+# ===== 构建产物 =====
+build/
+dist/
+target/
+out/
+bin/
+*.tsbuildinfo
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.venv/
+venv/
+
+# ===== Node =====
+node_modules/
+
+# ===== 日志 =====
+*.log
+logs/
+
+# ===== 操作系统 =====
+Thumbs.db
+ehthumbs.db
+
+# ===== 项目专属（构建时从官方源下载，不入库；保留目录占位） =====
 binaries/*
 !binaries/.gitkeep
-dist/
 *.deb
 *.rpm
-
-# 手动解压产生的二进制目录(勿提交; 构建时从官方源地址下载, 不纳入仓库)
 hdsentinel-*/
