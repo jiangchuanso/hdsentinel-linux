@@ -18,9 +18,10 @@ jobs:
         include:
           - { arch: i386 }
           - { arch: amd64 }
-          - { arch: armhf }
-          - { arch: arm64 }
-          - { arch: armel }
+          - { arch: armv5 }
+          - { arch: armv6 }
+          - { arch: armv7 }
+          - { arch: aarch64 }
 
     steps:
       - name: Checkout
@@ -36,16 +37,15 @@ jobs:
         run: bash ./scripts/download-binaries.sh
 
       - name: Build ${{ matrix.arch }} packages
-        env:
-          PKG_VERSION: "0.20"
+        # 版本号由 build-packages.sh 从 release 的 v* 标签读取, 不在此硬编码
         run: bash ./scripts/build-packages.sh ${{ matrix.arch }}
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7
         with:
           name: hdsentinel-${{ matrix.arch }}
-          # 注意: armhf 的 rpm 分 armv7hl/armv6hl, armel 的 rpm 是 armv5tel,
-          # 文件名不一定含 arch 字样, 故直接收集 dist/ 下全部 hdsentinel* 产物
+          # ARM 已按 armv5/v6/v7/aarch64 拆为独立包, 文件名含各自架构,
+          # 直接收集 dist/ 下全部 hdsentinel* 产物即可
           path: dist/hdsentinel*
           if-no-files-found: error
 

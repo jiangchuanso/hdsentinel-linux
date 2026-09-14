@@ -12,15 +12,17 @@
 |-------------|------------------|-----------------|----------|------|
 | i386        | i386             | i386            | hdsentinel-019b.gz     | 32-bit x86 |
 | amd64       | amd64            | x86_64          | hdsentinel-020c-x64.zip| 64-bit x86 |
-| armhf       | armhf            | armv7hl         | hdsentinel-armv7.gz    | ARMv7 (RPi4/NAS) |
-| arm64       | arm64            | aarch64         | hdsentinel-armv8.zip   | ARMv8 / ARM64 |
-| armel       | armel            | armv5tel        | hdsentinelarm          | ARMv5 (NAS, 未压缩) |
+| armv5       | armelv5          | armv5tel        | hdsentinelarm          | ARMv5 (NAS, 未压缩) |
+| armv6       | armelv6          | armv6hl         | hdsentinel-020-arm.gz  | ARMv6 (老版 Pi) |
+| armv7       | armhf            | armv7hl         | hdsentinel-armv7.gz    | ARMv7 (RPi4/NAS) |
+| aarch64     | arm64            | aarch64         | hdsentinel-armv8.zip   | ARMv8 / ARM64 |
 
-> 源文件名/下载 URL 映射见 `binaries.manifest`。`hdsentinel-020-arm.gz`(ARMv6 老版 Pi)
-> 与 `hdsentinel-armv7.gz`(ARMv7) 同为 32-bit ARM、都归 `armhf` 架构，二者用不同
-> 迭代号打成**两个独立的 armhf 包**（deb: `hdsentinel_0.20-1_armhf.deb` 来自 armv7，
-> `hdsentinel_0.20-2_armhf.deb` 来自 020-arm；rpm: `hdsentinel-0.20-1.armv7hl.rpm`
-> 与 `hdsentinel-0.20-2.armv6hl.rpm`，rpm 架构已分别标注 armv7hl / armv6hl）。同架构只能装其一，按需选用。
+> 源文件名/下载 URL 映射见 `binaries.manifest`。ARM 按 **CPU 代际** 拆为四个独立包：`armv5`
+> （NAS，未压缩）、`armv6`（老版 Pi）、`armv7`（RPi4/NAS）、`aarch64`（ARM64），各自按架构键
+> 独立打包。**所有架构的包版本号完全一致**，统一从 release 的 `v*` 标签读取（如标签 `v0.20`
+> → 版本 `0.20`），不在各架构间做区分。rpm 架构标签用标准名 armv5tel / armv6hl / armv7hl / aarch64；
+> deb 因 Debian 无按代际区分的端口，采用可区分三代的非标准名 armelv5(ARMv5) / armelv6(ARMv6) /
+> armhf(ARMv7，标准) / arm64(ARM64)。
 > 所有二进制均在构建时从官方 `/hdslin/` 源地址下载，不提交进仓库。
 
 ## 目录结构
@@ -219,7 +221,7 @@ cron 正在写入的文件句柄），由 `/etc/cron.daily/logrotate` 每天执�
 sudo apt-get install -y ruby ruby-dev build-essential rpm unzip gzip
 sudo gem install fpm
 ./scripts/download-binaries.sh        # 从官方 /hdslin/ 源地址下载各发行版
-./scripts/build-packages.sh           # 全部架构; 或 amd64 / arm64 ...
+./scripts/build-packages.sh           # 全部架构; 或 amd64 / aarch64 ...
 ls dist/
 ```
 

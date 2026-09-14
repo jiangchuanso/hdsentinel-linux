@@ -3,13 +3,34 @@
 # 用法:
 #   ./scripts/build-packages.sh            # 构建全部架构
 #   ./scripts/build-packages.sh amd64      # 仅构建指定架构
-#   PKG_VERSION=0.20 ./scripts/build-packages.sh arm64
+#   PKG_VERSION=0.20 ./scripts/build-packages.sh aarch64
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN_DIR="$ROOT/binaries"
 OUT_DIR="$ROOT/dist"
-PKG_VER="${PKG_VERSION:-0.20}"
+# 版本号从 release 的 v* 标签读取(标签 v0.20 -> 版本 0.20)。
+# 优先级: PKG_VERSION 环境变量 > CI 的 tag ref (GITHUB_REF) > 本地 git describe > 兜底 0.20。
+resolve_pkg_version() {
+  if [[ -n "${PKG_VERSION:-}" ]]; then
+    echo "$PKG_VERSION"; return
+  fi
+  if [[ -n "${GITHUB_REF:-}" && "$GITHUB_REF" == refs/tags/* ]]; then
+    local t="${GITHUB_REF#refs/tags/}"
+    echo "${t#v}"; return
+  fi
+  if command -v git >/dev/null 2>&1; then
+    local d
+    d="$(git -C "$ROOT" describe --tags --match 'v*' 2>/dev/null | head -n1)"
+    if [[ -n "$d" ]]; then
+      d="${d#v}"        # 去掉前缀 v
+      d="${d%%-*}"      # 去掉 git describe 可能的 -N-g<hash> 后缀
+      echo "$d"; return
+    fi
+  fi
+  echo "0.20"
+}
+PKG_VER="$(resolve_pkg_version)"
 PKG_ITER="${PKG_ITER:-1}"
 MANIFEST="$ROOT/binaries.manifest"
 mkdir -p "$OUT_DIR"

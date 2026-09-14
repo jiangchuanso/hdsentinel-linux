@@ -12,17 +12,19 @@ e-mail alert integration. Packaging is done in **GitHub Actions**.
 |----------------|------------------|-----------------|----------------------|------------------|
 | i386           | i386             | i386            | hdsentinel-019b.gz     | 32-bit x86       |
 | amd64          | amd64            | x86_64          | hdsentinel-020c-x64.zip| 64-bit x86       |
-| armhf          | armhf            | armv7hl         | hdsentinel-armv7.gz    | ARMv7 (RPi4/NAS) |
-| arm64          | arm64            | aarch64         | hdsentinel-armv8.zip   | ARMv8 / ARM64    |
-| armel          | armel            | armv5tel        | hdsentinelarm          | ARMv5 (NAS, raw) |
+| armv5          | armelv5          | armv5tel        | hdsentinelarm          | ARMv5 (NAS, raw) |
+| armv6          | armelv6          | armv6hl         | hdsentinel-020-arm.gz  | ARMv6 (older Pi) |
+| armv7          | armhf            | armv7hl         | hdsentinel-armv7.gz    | ARMv7 (RPi4/NAS) |
+| aarch64        | arm64            | aarch64         | hdsentinel-armv8.zip   | ARMv8 / ARM64    |
 
-> The source filename → download URL mapping lives in `binaries.manifest`. `hdsentinel-020-arm.gz`
-> (ARMv6, older Pi) and `hdsentinel-armv7.gz` (ARMv7) are both 32-bit ARM and both map to the
-> `armhf` architecture, but are packaged as **two separate armhf packages with different
-> iteration numbers** (deb: `hdsentinel_0.20-1_armhf.deb` from armv7, `hdsentinel_0.20-2_armhf.deb`
-> from 020-arm; rpm: `hdsentinel-0.20-1.armv7hl.rpm` and `hdsentinel-0.20-2.armv6hl.rpm`, with the
-> rpm architecture labelled armv7hl / armv6hl respectively). Only one can be installed per
-> architecture — pick what fits your device.
+> The source filename → download URL mapping lives in `binaries.manifest`. ARM is split into four
+> distinct packages by **CPU generation** — `armv5` (NAS, raw), `armv6` (older Pi), `armv7`
+> (RPi4/NAS) and `aarch64` (ARM64) — each built as its own package keyed by architecture.
+> The **package version is identical across all architectures** and is read from the `v*` release
+> tag (e.g. tag `v0.20` → version `0.20`); it is never encoded per-architecture. For rpm the
+> architecture label uses the standard `armv5tel` / `armv6hl` / `armv7hl` / `aarch64`. For deb,
+> Debian has no distinct port per ARM generation, so the label uses descriptive non-standard names
+> `armelv5` (ARMv5) / `armelv6` (ARMv6) / `armhf` (ARMv7, standard) / `arm64` (ARM64).
 > All binaries are downloaded from the official `/hdslin/` source during the build; they are not
 > committed to this repository.
 
@@ -243,7 +245,7 @@ To change the interval, edit the `*/15` field (or comment the line to disable).
 sudo apt-get install -y ruby ruby-dev build-essential rpm unzip gzip
 sudo gem install fpm
 ./scripts/download-binaries.sh        # download each release from the official /hdslin/ source
-./scripts/build-packages.sh           # all architectures; or amd64 / arm64 ...
+./scripts/build-packages.sh           # all architectures; or amd64 / aarch64 ...
 ls dist/
 ```
 
